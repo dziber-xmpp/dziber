@@ -20,6 +20,26 @@ fn body_width_px(body: &str) -> u32 {
     (longest_line.saturating_mul(8) + 16).clamp(72, 520)
 }
 
+fn parse_file_message(body: &str) -> Option<(String, String)> {
+    let mut lines = body.lines();
+    let first = lines.next()?.trim();
+    let second = lines.next()?.trim();
+    if lines.next().is_some() {
+        return None;
+    }
+    let name = first.strip_prefix("📎 ")?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if !(second.starts_with("http://")
+        || second.starts_with("https://")
+        || second.starts_with("aesgcm://"))
+    {
+        return None;
+    }
+    Some((name.to_string(), second.to_string()))
+}
+
 pub fn view<'a>(
     conversation: Option<&'a Conversation>,
     draft: &'a str,
@@ -78,8 +98,21 @@ pub fn view<'a>(
                 row![text(format!("{}", msg.timestamp.format("%H:%M"))).size(9),]
             };
 
-            let body_editor: Element<Message> =
-                if let Some(content) = chat_message_bodies.get(&msg.id) {
+            let body_editor: Element<Message> = if msg.direction == Direction::Incoming {
+                if let Some((filename, url)) = parse_file_message(&msg.body) {
+                    button(text(filename.clone()).size(13))
+                        .on_press(Message::DownloadFileClicked {
+                            url,
+                            filename: filename.clone(),
+                        })
+                        .padding(Padding {
+                            top: 2.0,
+                            right: 4.0,
+                            bottom: 2.0,
+                            left: 4.0,
+                        })
+                        .into()
+                } else if let Some(content) = chat_message_bodies.get(&msg.id) {
                     let width = body_width_px(&msg.body);
                     text_editor(content)
                         .on_action({
@@ -109,7 +142,38 @@ pub fn view<'a>(
                         .into()
                 } else {
                     text(&msg.body).size(13).into()
-                };
+                }
+            } else if let Some(content) = chat_message_bodies.get(&msg.id) {
+                let width = body_width_px(&msg.body);
+                text_editor(content)
+                    .on_action({
+                        let id = msg.id.clone();
+                        move |action| Message::ChatMessageBodyAction {
+                            message_id: id.clone(),
+                            action,
+                        }
+                    })
+                    .style(|theme, status| {
+                        let mut style = text_editor::default(theme, status);
+                        style.background = Background::Color(Color::TRANSPARENT);
+                        style.border.width = 0.0;
+                        style
+                    })
+                    .width(width)
+                    .size(13)
+                    .wrapping(Wrapping::Word)
+                    .min_height(18)
+                    .padding(Padding {
+                        top: 1.0,
+                        right: 2.0,
+                        bottom: 1.0,
+                        left: 2.0,
+                    })
+                    .height(Length::Shrink)
+                    .into()
+            } else {
+                text(&msg.body).size(13).into()
+            };
 
             let bubble = container(column![body_editor, meta_row].spacing(2))
                 .padding(8)
@@ -146,8 +210,11 @@ pub fn view<'a>(
     let send_button = button("Send")
         .on_press(Message::SendMessageClicked)
         .padding(10);
+    let send_file_button = button("Send File")
+        .on_press(Message::SendFileClicked)
+        .padding(10);
 
-    let input_row = row![input, send_button]
+    let input_row = row![input, send_button, send_file_button]
         .spacing(8)
         .align_y(Alignment::Center);
 

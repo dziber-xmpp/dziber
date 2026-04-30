@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use iced::widget::operation;
@@ -72,6 +74,12 @@ pub enum Message {
     ConversationSelected(usize),
     DraftChanged(String),
     SendMessageClicked,
+    SendFileClicked,
+    DownloadFileClicked {
+        url: String,
+        filename: String,
+    },
+    FileDownloadFinished(Result<String, String>),
     ToggleOmemo,
     ToggleOmemoQr,
     WindowOpened(window::Id),
@@ -325,6 +333,75 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             }
 
             scroll_chat_to_end()
+        }
+        Message::SendFileClicked => {
+            let Some(idx) = state.selected_conversation else {
+                return Task::none();
+            };
+            let Some(conv) = state.conversations.get(idx) else {
+                return Task::none();
+            };
+            let to = conv.contact_jid.clone();
+            let Some(path) = rfd::FileDialog::new().pick_file() else {
+                return Task::none();
+            };
+            let path_string = path.to_string_lossy().to_string();
+            if let Some(ref mut sender) = state.xmpp_sender {
+                let mut sender = sender.clone();
+                return Task::perform(
+                    async move {
+                        let _ = sender
+                            .send(XmppCommand::SendFile {
+                                to,
+                                path: path_string,
+                            })
+                            .await;
+                    },
+                    |_| Message::JidChanged(String::new()),
+                )
+                .discard();
+            }
+            Task::none()
+        }
+        Message::DownloadFileClicked { url, filename } => {
+            let Some(path) = rfd::FileDialog::new().set_file_name(&filename).save_file() else {
+                return Task::none();
+            };
+            state.connection_status = format!("Downloading {}...", filename);
+            return Task::perform(
+                async move {
+                    let bytes = if url.starts_with("aesgcm://") {
+                        download_aesgcm_file(&url).await?
+                    } else {
+                        let response = reqwest::get(&url)
+                            .await
+                            .map_err(|e| format!("download failed: {}", e))?;
+                        if !response.status().is_success() {
+                            return Err(format!("download failed: HTTP {}", response.status()));
+                        }
+                        response
+                            .bytes()
+                            .await
+                            .map_err(|e| format!("download failed: {}", e))?
+                            .to_vec()
+                    };
+                    std::fs::write(&path, &bytes)
+                        .map_err(|e| format!("save failed: {}", e))?;
+                    Ok(path.to_string_lossy().to_string())
+                },
+                Message::FileDownloadFinished,
+            );
+        }
+        Message::FileDownloadFinished(result) => {
+            match result {
+                Ok(path) => {
+                    state.connection_status = format!("File saved: {}", path);
+                }
+                Err(err) => {
+                    state.connection_status = format!("File download failed: {}", err);
+                }
+            }
+            Task::none()
         }
         Message::ToggleOmemo => {
             state.omemo_enabled = !state.omemo_enabled;
@@ -772,4 +849,58 @@ fn save_config(account: &Account) -> Result<(), Box<dyn std::error::Error>> {
     let contents = serde_json::to_string_pretty(&config)?;
     std::fs::write(path, contents)?;
     Ok(())
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+    if !s.len().is_multiple_of(2) {
+        return Err("invalid hex length".to_string());
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = (bytes[i] as char)
+            .to_digit(16)
+            .ok_or_else(|| "invalid hex".to_string())?;
+        let lo = (bytes[i + 1] as char)
+            .to_digit(16)
+            .ok_or_else(|| "invalid hex".to_string())?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Ok(out)
+}
+
+async fn download_aesgcm_file(url: &str) -> Result<Vec<u8>, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid aesgcm url: {}", e))?;
+    let mut https_url = parsed.clone();
+    https_url
+        .set_scheme("https")
+        .map_err(|_| "invalid aesgcm scheme".to_string())?;
+
+    let frag = parsed
+        .fragment()
+        .ok_or_else(|| "aesgcm url missing key fragment".to_string())?;
+    let key_material = hex_decode(frag)?;
+    if key_material.len() < 48 {
+        return Err("aesgcm key material too short".to_string());
+    }
+    let key = &key_material[..32];
+    let nonce = &key_material[32..48];
+
+    https_url.set_fragment(None);
+    let response = reqwest::get(https_url)
+        .await
+        .map_err(|e| format!("download failed: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!("download failed: HTTP {}", response.status()));
+    }
+    let encrypted = response
+        .bytes()
+        .await
+        .map_err(|e| format!("download failed: {}", e))?;
+
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("invalid aes key: {}", e))?;
+    let decrypted = cipher
+        .decrypt(Nonce::from_slice(nonce), encrypted.as_ref())
+        .map_err(|_| "file decrypt failed".to_string())?;
+    Ok(decrypted)
 }

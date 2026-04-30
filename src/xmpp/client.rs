@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use futures::FutureExt;
@@ -44,6 +45,10 @@ pub enum XmppCommand {
         to: String,
         body: String,
         omemo: bool,
+    },
+    SendFile {
+        to: String,
+        path: String,
     },
     FetchDeviceList {
         jid: String,
@@ -259,6 +264,58 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = safe_send_stanza(c, msg.into(), "worker-loop", &mut stream_healthy).await;
                                 let _ = output.send(XmppEvent::MessageSent { _id: uuid::Uuid::new_v4().to_string() }).await;
                             }
+                            Some(XmppCommand::SendFile { to, path }) => {
+                                let file_path = PathBuf::from(path.clone());
+                                let Some(filename) = file_path.file_name().and_then(|n| n.to_str()).map(ToOwned::to_owned) else {
+                                    let _ = output.send(XmppEvent::StatusChanged("File send failed: invalid file path".to_string())).await;
+                                    continue;
+                                };
+                                let metadata = match std::fs::metadata(&file_path) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!("File send failed: {}", e))).await;
+                                        continue;
+                                    }
+                                };
+                                let size = metadata.len();
+                                let content_type = guess_content_type(&file_path);
+                                let services = our_jid
+                                    .as_deref()
+                                    .map(candidate_upload_services)
+                                    .unwrap_or_default();
+                                if services.is_empty() {
+                                    let _ = output.send(XmppEvent::StatusChanged("File send failed: not connected".to_string())).await;
+                                    continue;
+                                }
+                                let request_id = format!("upload-slot-{}", uuid::Uuid::new_v4());
+                                if !send_http_upload_slot_request(
+                                    c,
+                                    &request_id,
+                                    &services[0],
+                                    &filename,
+                                    size,
+                                    &content_type,
+                                    &mut stream_healthy,
+                                )
+                                .await
+                                {
+                                    let _ = output.send(XmppEvent::StatusChanged("File send failed: could not request upload slot".to_string())).await;
+                                    continue;
+                                }
+                                pending_iqs.insert(
+                                    request_id,
+                                    PendingIq::HttpUploadSlot {
+                                        to,
+                                        path: file_path,
+                                        filename,
+                                        size,
+                                        content_type,
+                                        services,
+                                        service_idx: 0,
+                                    },
+                                );
+                                let _ = output.send(XmppEvent::StatusChanged("Uploading file...".to_string())).await;
+                            }
                             Some(XmppCommand::Disconnect) => {
                                 if let Some(ref mgr) = omemo {
                                     let _ = mgr.save();
@@ -307,6 +364,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
             } else {
                 match cmd_rx.next().await {
                     Some(XmppCommand::SendMessage { .. }) => {}
+                    Some(XmppCommand::SendFile { .. }) => {}
                     Some(XmppCommand::FetchDeviceList { .. }) => {}
                     Some(XmppCommand::FetchAvatar { .. }) => {}
                     Some(XmppCommand::Connect { jid, password }) => {
@@ -467,6 +525,15 @@ enum PendingIq {
     },
     VCardAvatar {
         jid: String,
+    },
+    HttpUploadSlot {
+        to: String,
+        path: PathBuf,
+        filename: String,
+        size: u64,
+        content_type: String,
+        services: Vec<String>,
+        service_idx: usize,
     },
 }
 
@@ -826,6 +893,47 @@ async fn handle_stanza(
                 Iq::Result { id, payload, .. } => {
                     if let Some(pending) = pending_iqs.remove(&id) {
                         match pending {
+                            PendingIq::HttpUploadSlot {
+                                to,
+                                path,
+                                filename,
+                                size: _size,
+                                content_type,
+                                services: _services,
+                                service_idx: _service_idx,
+                            } => {
+                                let Some(element) = payload else {
+                                    let _ = output.send(XmppEvent::StatusChanged("File send failed: upload slot response missing payload".to_string())).await;
+                                    return;
+                                };
+                                let Some((put_url, get_url, headers)) =
+                                    parse_http_upload_slot(&element)
+                                else {
+                                    let _ = output.send(XmppEvent::StatusChanged("File send failed: could not parse upload slot".to_string())).await;
+                                    return;
+                                };
+                                match upload_file_to_slot(&put_url, &path, &content_type, &headers).await {
+                                    Ok(()) => {
+                                        let msg = make_file_message(&to, &filename, &get_url);
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            msg.into(),
+                                            "http-upload-send-message",
+                                            stream_healthy,
+                                        )
+                                        .await;
+                                        let _ = output
+                                            .send(XmppEvent::MessageSent {
+                                                _id: uuid::Uuid::new_v4().to_string(),
+                                            })
+                                            .await;
+                                        let _ = output.send(XmppEvent::StatusChanged("File sent".to_string())).await;
+                                    }
+                                    Err(err) => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!("File send failed: {}", err))).await;
+                                    }
+                                }
+                            }
                             PendingIq::Bundle { jid, version } => {
                                 let mut found_any = false;
                                 let mut found_other = false;
@@ -1846,6 +1954,46 @@ async fn handle_stanza(
                     if let Some(pending) = pending_iqs.remove(&id) {
                         tracing::info!("[IQ] Pending IQ {} failed", id);
                         match pending {
+                            PendingIq::HttpUploadSlot {
+                                to,
+                                path,
+                                filename,
+                                size,
+                                content_type,
+                                services,
+                                service_idx,
+                            } => {
+                                let next_idx = service_idx + 1;
+                                if next_idx < services.len() {
+                                    let request_id = format!("upload-slot-{}", uuid::Uuid::new_v4());
+                                    if send_http_upload_slot_request(
+                                        client,
+                                        &request_id,
+                                        &services[next_idx],
+                                        &filename,
+                                        size,
+                                        &content_type,
+                                        stream_healthy,
+                                    )
+                                    .await
+                                    {
+                                        pending_iqs.insert(
+                                            request_id,
+                                            PendingIq::HttpUploadSlot {
+                                                to,
+                                                path,
+                                                filename,
+                                                size,
+                                                content_type,
+                                                services,
+                                                service_idx: next_idx,
+                                            },
+                                        );
+                                        return;
+                                    }
+                                }
+                                let _ = output.send(XmppEvent::StatusChanged("File send failed: upload service unavailable".to_string())).await;
+                            }
                             PendingIq::VCardAvatar { jid } => {
                                 tracing::info!(
                                     "[AVATAR] vCard error for {}, falling back to PEP",
@@ -2201,6 +2349,111 @@ fn make_message(to: &str, body: &str) -> XmppMessage {
     message.type_ = MessageType::Chat;
     message.bodies.insert(Lang::default(), body.to_owned());
     message
+}
+
+fn make_file_message(to: &str, filename: &str, url: &str) -> XmppMessage {
+    make_message(to, &format!("📎 {}\n{}", filename, url))
+}
+
+fn guess_content_type(path: &Path) -> String {
+    match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
+        Some(ext) => match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg".to_string(),
+            "png" => "image/png".to_string(),
+            "gif" => "image/gif".to_string(),
+            "webp" => "image/webp".to_string(),
+            "pdf" => "application/pdf".to_string(),
+            "txt" => "text/plain".to_string(),
+            "mp3" => "audio/mpeg".to_string(),
+            "wav" => "audio/wav".to_string(),
+            "mp4" => "video/mp4".to_string(),
+            _ => "application/octet-stream".to_string(),
+        },
+        None => "application/octet-stream".to_string(),
+    }
+}
+
+fn candidate_upload_services(our_jid: &str) -> Vec<String> {
+    let bare = our_jid.split('/').next().unwrap_or(our_jid);
+    let domain = bare.split('@').nth(1).unwrap_or(bare);
+    vec![format!("upload.{}", domain), domain.to_string()]
+}
+
+async fn send_http_upload_slot_request(
+    client: &mut Client,
+    request_id: &str,
+    service: &str,
+    filename: &str,
+    size: u64,
+    content_type: &str,
+    stream_healthy: &mut bool,
+) -> bool {
+    let request = Element::builder("request", "urn:xmpp:http:upload:0")
+        .attr("filename".try_into().expect("valid attr"), filename)
+        .attr("size".try_into().expect("valid attr"), size.to_string())
+        .attr(
+            "content-type".try_into().expect("valid attr"),
+            content_type,
+        )
+        .append(Element::builder("message", "urn:xmpp:http:upload:purpose:0"))
+        .build();
+    let iq = Iq::Get {
+        id: request_id.to_string(),
+        from: None,
+        to: Jid::from_str(service).ok(),
+        payload: request,
+    };
+    safe_send_stanza(client, iq.into(), "http-upload-slot", stream_healthy).await
+}
+
+fn parse_http_upload_slot(payload: &Element) -> Option<(String, String, Vec<(String, String)>)> {
+    if payload.name() != "slot" || payload.ns() != "urn:xmpp:http:upload:0" {
+        return None;
+    }
+    let put = payload.get_child("put", "urn:xmpp:http:upload:0")?;
+    let get = payload.get_child("get", "urn:xmpp:http:upload:0")?;
+    let put_url = put.attr("url")?.to_string();
+    let get_url = get.attr("url")?.to_string();
+    let mut headers = Vec::new();
+    for child in put.children() {
+        if child.name() == "header" && child.ns() == "urn:xmpp:http:upload:0"
+            && let Some(name) = child.attr("name")
+        {
+            headers.push((name.to_string(), child.text()));
+        }
+    }
+    Some((put_url, get_url, headers))
+}
+
+async fn upload_file_to_slot(
+    put_url: &str,
+    path: &Path,
+    content_type: &str,
+    headers: &[(String, String)],
+) -> Result<(), String> {
+    let data = std::fs::read(path).map_err(|e| format!("read failed: {}", e))?;
+    let client = reqwest::Client::new();
+    let mut req = client.put(put_url).header(reqwest::header::CONTENT_TYPE, content_type);
+    for (name, value) in headers {
+        let allowed = matches!(
+            name.to_ascii_lowercase().as_str(),
+            "authorization" | "cookie" | "expires"
+        );
+        if !allowed {
+            continue;
+        }
+        req = req.header(name, value);
+    }
+    let res = req
+        .body(data)
+        .send()
+        .await
+        .map_err(|e| format!("PUT failed: {}", e))?;
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("PUT failed: HTTP {}", res.status()))
+    }
 }
 
 fn build_device_list_iq(device_ids: &[u32], to: &Jid) -> Iq {
