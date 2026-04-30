@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
+use iced::widget::operation;
 use iced::widget::{Column, Space, button, image, row, text};
-use iced::{Alignment, Element, Length, Subscription, Task, Theme, exit, stream, window};
+use iced::{Alignment, Element, Length, Subscription, Task, Theme, stream, window};
 
 use crate::models::account::{Account, ConnectionStatus};
 use crate::models::contact::Contact;
@@ -155,6 +156,13 @@ pub fn boot() -> (AppState, Task<Message>) {
 
 pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
     let has_unsaved_changes = |state: &AppState| !state.draft.trim().is_empty();
+    let scroll_chat_to_end = || operation::snap_to_end(crate::ui::chat::CHAT_SCROLL_ID);
+    let should_scroll_selected = |state: &AppState, jid: &str| {
+        state
+            .selected_conversation
+            .and_then(|idx| state.conversations.get(idx))
+            .is_some_and(|conv| conv.contact_jid == jid)
+    };
 
     match message {
         Message::JidChanged(jid) => {
@@ -212,7 +220,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 && let Some(ref mut sender) = state.xmpp_sender
             {
                 let mut sender = sender.clone();
-                return Task::perform(
+                let fetch_task = Task::perform(
                     async move {
                         let _ = sender
                             .send(XmppCommand::FetchAvatar { jid: jid.clone() })
@@ -222,8 +230,9 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     |_| Message::JidChanged(String::new()),
                 )
                 .discard();
+                return Task::batch([fetch_task, scroll_chat_to_end()]);
             }
-            Task::none()
+            scroll_chat_to_end()
         }
         Message::DraftChanged(text) => {
             state.draft = text;
@@ -265,7 +274,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
 
             if let Some(ref mut sender) = state.xmpp_sender {
                 let mut sender = sender.clone();
-                return Task::perform(
+                let send_task = Task::perform(
                     async move {
                         let _ = sender
                             .send(XmppCommand::SendMessage { to, body, omemo })
@@ -275,9 +284,10 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     |_| Message::JidChanged(String::new()),
                 )
                 .discard();
+                return Task::batch([send_task, scroll_chat_to_end()]);
             }
 
-            Task::none()
+            scroll_chat_to_end()
         }
         Message::ToggleOmemo => {
             state.omemo_enabled = !state.omemo_enabled;
@@ -322,10 +332,12 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 state.show_unsaved_quit_confirm = true;
                 Task::none()
             } else {
-                exit()
+                std::process::exit(0);
             }
         }
-        Message::ConfirmQuitDiscard => exit(),
+        Message::ConfirmQuitDiscard => {
+            std::process::exit(0);
+        }
         Message::ConfirmQuitCancel => {
             state.show_unsaved_quit_confirm = false;
             Task::none()
@@ -464,6 +476,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             }
             XmppEvent::MessageReceived(msg) => {
                 let from_bare = msg.from.split('/').next().unwrap_or(&msg.from).to_string();
+                let notify_body = msg.body.clone();
                 let account_jid = state
                     .account
                     .as_ref()
@@ -495,8 +508,15 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
 
                 sort_conversations(state);
+                if state.window_hidden_to_tray {
+                    crate::notify::incoming_message(&from_bare, &notify_body);
+                }
 
-                Task::none()
+                if should_scroll_selected(state, &from_bare) {
+                    scroll_chat_to_end()
+                } else {
+                    Task::none()
+                }
             }
             XmppEvent::MessageSent { .. } => Task::none(),
             XmppEvent::OmemoMessageReceived {
@@ -510,6 +530,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     .map(|a| a.jid.clone())
                     .unwrap_or_default();
                 let msg = ChatMessage::new(from.clone(), body, direction);
+                let notify_body = msg.body.clone();
 
                 if let Err(e) = crate::db::save_message(&msg, &account_jid, &from) {
                     eprintln!("Failed to save message: {}", e);
@@ -535,7 +556,14 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
 
                 sort_conversations(state);
-                Task::none()
+                if state.window_hidden_to_tray {
+                    crate::notify::incoming_message(&from, &notify_body);
+                }
+                if should_scroll_selected(state, &from) {
+                    scroll_chat_to_end()
+                } else {
+                    Task::none()
+                }
             }
             XmppEvent::BundleReceived => Task::none(),
             XmppEvent::AvatarReceived { jid, bytes } => {

@@ -1,5 +1,6 @@
 mod db;
 mod models;
+mod notify;
 mod omemo;
 mod tray;
 mod ui;

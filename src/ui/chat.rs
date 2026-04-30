@@ -6,6 +6,8 @@ use crate::models::message::{Direction, MessageStatus};
 
 use super::app::Message;
 
+pub const CHAT_SCROLL_ID: &str = "chat_messages_scroll";
+
 pub fn view<'a>(conversation: Option<&'a Conversation>, draft: &'a str) -> Element<'a, Message> {
     let Some(conv) = conversation else {
         return container(
@@ -79,6 +81,7 @@ pub fn view<'a>(conversation: Option<&'a Conversation>, draft: &'a str) -> Eleme
             list = list.push(align);
         }
         scrollable(list)
+            .id(CHAT_SCROLL_ID)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
