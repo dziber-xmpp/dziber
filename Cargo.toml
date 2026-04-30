@@ -1,0 +1,40 @@
+[package]
+name = "dziber"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced = { version = "0.14.0", features = ["tokio", "image"] }
+tokio-xmpp = { version = "5.0.0", default-features = false, features = ["starttls", "ring", "rustls-native-certs"] }
+xmpp-parsers = "0.22.0"
+tokio = { version = "1.44", features = ["sync"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "6.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.16", features = ["v4", "serde"] }
+futures = "0.3.32"
+diesel = { version = "2.2", features = ["sqlite", "chrono"] }
+diesel_migrations = { version = "2.2", features = ["sqlite"] }
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+vodozemac = "0.10"
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = "0.1"
+anyhow = "1"
+hkdf = "0.12"
+sha2 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
+hmac = "0.12"
+rand = "0.8"
+rand09 = { package = "rand", version = "0.9" }
+xeddsa = "1"
+async-trait = "0.1"
+wa-rs-libsignal = "0.2.0"
+libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.5" }
+qrcodegen = "1.8"
+
+[profile.release]
+opt-level = 3
+lto = true
