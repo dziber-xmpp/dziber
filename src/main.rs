@@ -6,9 +6,9 @@ mod tray;
 mod ui;
 mod xmpp;
 
-use ui::app;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use ui::app;
 
 fn init_tracing() {
     let log_path = dirs::home_dir()

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
-use vodozemac::olm::SessionCreationError;
 use vodozemac::Curve25519PublicKey;
+use vodozemac::olm::SessionCreationError;
 use vodozemac::olm::{
     Account, InboundCreationResult, OlmMessage, Session, SessionConfig, SessionPickle,
 };

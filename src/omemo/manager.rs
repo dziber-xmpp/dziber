@@ -64,7 +64,8 @@ impl OmemoManager {
     }
 
     fn rebuild_signal_stores(&mut self) {
-        self.signal_store = crate::omemo::signal_store::SignalStore::from_omemo_account(&self.account);
+        self.signal_store =
+            crate::omemo::signal_store::SignalStore::from_omemo_account(&self.account);
         self.signal_store_prev =
             crate::omemo::signal_store::SignalStore::from_omemo_account_with_previous_fallback(
                 &self.account,
@@ -127,7 +128,8 @@ impl OmemoManager {
                 let new_id = Self::generate_compatible_device_id();
                 tracing::info!(
                     "[OMEMO] Key material regenerated; rotating device id {} -> {}",
-                    account.device_id, new_id
+                    account.device_id,
+                    new_id
                 );
                 account.device_id = new_id;
                 let _ = crate::db::omemo::save_omemo_account(&account, &pickle_key);
@@ -289,7 +291,9 @@ impl OmemoManager {
                 Err(e) => {
                     tracing::info!(
                         "[OMEMO signal] process_prekey_bundle failed for {}:{}: {:?}",
-                        jid, device_id, e
+                        jid,
+                        device_id,
+                        e
                     );
                 }
             }
@@ -323,7 +327,11 @@ impl OmemoManager {
         }
         tracing::info!(
             "[OMEMO encrypt] to={} our_jid={} our_device={} devices={:?} use_v0={}",
-            to, our_jid, our_device_id, devices, use_v0
+            to,
+            our_jid,
+            our_device_id,
+            devices,
+            use_v0
         );
 
         let (ciphertext, plaintext, iv) = {
@@ -350,10 +358,11 @@ impl OmemoManager {
                     sessions.remove(device_id);
                 }
                 let ik = self.account.inner.curve25519_key().to_bytes().to_vec();
-                let (spk_id, spk_pub) = match self.account.all_stored_fallback_keys().into_iter().next() {
-                    Some(v) => v,
-                    None => continue,
-                };
+                let (spk_id, spk_pub) =
+                    match self.account.all_stored_fallback_keys().into_iter().next() {
+                        Some(v) => v,
+                        None => continue,
+                    };
                 let spk = spk_pub.to_bytes().to_vec();
                 let mut spk_for_sig = Vec::with_capacity(33);
                 spk_for_sig.push(0x05);
@@ -406,7 +415,9 @@ impl OmemoManager {
                     Err(e) => {
                         tracing::info!(
                             "[OMEMO signal] message_encrypt failed for {}:{}: {:?}",
-                            to, device_id, e
+                            to,
+                            device_id,
+                            e
                         );
                     }
                 }
@@ -417,7 +428,8 @@ impl OmemoManager {
                 if self.signal_store.is_some() {
                     tracing::info!(
                         "[OMEMO encrypt] Skipping recipient {} device {} (no libsignal slot)",
-                        to, device_id
+                        to,
+                        device_id
                     );
                     continue;
                 }
@@ -426,7 +438,8 @@ impl OmemoManager {
                     None => {
                         tracing::info!(
                             "[OMEMO encrypt] No session for recipient {} device {}",
-                            to, device_id
+                            to,
+                            device_id
                         );
                         continue;
                     }
@@ -437,7 +450,11 @@ impl OmemoManager {
                     OlmMessage::Normal(ref m) => m.to_bytes(),
                     OlmMessage::PreKey(ref m) => m.to_bytes(),
                 };
-                recipient_keys.push(MessageKey { rid: *device_id, kex, data });
+                recipient_keys.push(MessageKey {
+                    rid: *device_id,
+                    kex,
+                    data,
+                });
             }
         }
         if !recipient_keys.is_empty() {
@@ -454,7 +471,8 @@ impl OmemoManager {
             for device_id in &own_devices {
                 let mut used_libsignal = false;
                 if let Some(base_store) = self.signal_store.clone() {
-                    let remote = ProtocolAddress::new(our_jid.to_string(), DeviceId::from(*device_id));
+                    let remote =
+                        ProtocolAddress::new(our_jid.to_string(), DeviceId::from(*device_id));
                     let mut session_store = base_store.clone();
                     let mut identity_store = base_store.clone();
                     match futures::executor::block_on(message_encrypt(
@@ -478,7 +496,9 @@ impl OmemoManager {
                         Err(e) => {
                             tracing::info!(
                                 "[OMEMO signal] message_encrypt failed for own {}:{}: {:?}",
-                                our_jid, device_id, e
+                                our_jid,
+                                device_id,
+                                e
                             );
                         }
                     }
@@ -505,7 +525,11 @@ impl OmemoManager {
                         OlmMessage::Normal(ref m) => m.to_bytes(),
                         OlmMessage::PreKey(ref m) => m.to_bytes(),
                     };
-                    own_keys.push(MessageKey { rid: *device_id, kex, data });
+                    own_keys.push(MessageKey {
+                        rid: *device_id,
+                        kex,
+                        data,
+                    });
                 }
             }
             if !own_keys.is_empty() {
@@ -546,7 +570,11 @@ impl OmemoManager {
         let from_addr = from.to_string();
         tracing::info!(
             "[OMEMO decrypt] from={} from_bare={} our_jid={} our_device={} sender_device={}",
-            from, from_bare, our_jid, our_device_id, msg.header.sid
+            from,
+            from_bare,
+            our_jid,
+            our_device_id,
+            msg.header.sid
         );
         let ids = self
             .account
@@ -649,7 +677,10 @@ impl OmemoManager {
             }
         }
 
-        fn normalize_signal_inner_message(data: Vec<u8>, strip_field1_prefix: bool) -> Option<Vec<u8>> {
+        fn normalize_signal_inner_message(
+            data: Vec<u8>,
+            strip_field1_prefix: bool,
+        ) -> Option<Vec<u8>> {
             if data.is_empty() {
                 return None;
             }
@@ -687,7 +718,11 @@ impl OmemoManager {
                         }
                         let mut bytes = data[pos..pos + len].to_vec();
                         pos += len;
-                        if strip_field1_prefix && field == 1 && bytes.len() == 33 && bytes[0] == 0x05 {
+                        if strip_field1_prefix
+                            && field == 1
+                            && bytes.len() == 33
+                            && bytes[0] == 0x05
+                        {
                             bytes = bytes[1..].to_vec();
                         }
                         encode_varint(tag, &mut out);
@@ -715,7 +750,6 @@ impl OmemoManager {
             Some(out)
         }
 
-
         fn strip_signal_inner_ratchet_prefix(mut data: Vec<u8>) -> Vec<u8> {
             if data.len() >= 36 && data[1] == 0x0a && data[2] == 0x21 && data[3] == 0x05 {
                 data[2] = 0x20;
@@ -723,7 +757,6 @@ impl OmemoManager {
             }
             data
         }
-
 
         fn swap_vodo_prekey_base_identity(data: &[u8]) -> Option<Vec<u8>> {
             if data.len() < 2 {
@@ -1000,11 +1033,9 @@ impl OmemoManager {
             }
             // Normalize to the shape accepted by vodozemac prekey parser.
             let inner_raw = strip_signal_inner_ratchet_prefix(inner_msg?);
-            let mut inner_msg = normalize_signal_inner_message(
-                inner_raw.clone(),
-                strip_inner_field1_prefix,
-            )
-            .unwrap_or(inner_raw);
+            let mut inner_msg =
+                normalize_signal_inner_message(inner_raw.clone(), strip_inner_field1_prefix)
+                    .unwrap_or(inner_raw);
             if normalize_inner_version
                 && let Some(first) = inner_msg.first_mut()
                 && matches!(*first, 0x22 | 0x33 | 0x44)
@@ -1012,7 +1043,15 @@ impl OmemoManager {
                 *first &= 0x0f;
             }
 
-            tracing::info!("[OMEMO rewrite] prekey_id={} one_time_key_len={} base_key_len={} identity_key_len={} inner_len={} inner_first8={}", prekey_id, one_time_key.len(), base_key.len(), identity_key.len(), inner_msg.len(), first_bytes_hex(&inner_msg, 8));
+            tracing::info!(
+                "[OMEMO rewrite] prekey_id={} one_time_key_len={} base_key_len={} identity_key_len={} inner_len={} inner_first8={}",
+                prekey_id,
+                one_time_key.len(),
+                base_key.len(),
+                identity_key.len(),
+                inner_msg.len(),
+                first_bytes_hex(&inner_msg, 8)
+            );
 
             // Re-encode using vodozemac expected shape:
             // 1: one_time_key bytes, 2: base_key bytes, 3: identity_key bytes, 4: message bytes
@@ -1052,7 +1091,9 @@ impl OmemoManager {
                 }
             } else if parsed.is_none() {
                 tracing::info!("[OMEMO rewrite] signal-normal rewrite not applicable");
-                if let Some(rewritten) = rewrite_signalish_normal_for_vodo_strict(&normalized_key_data) {
+                if let Some(rewritten) =
+                    rewrite_signalish_normal_for_vodo_strict(&normalized_key_data)
+                {
                     tracing::info!(
                         "[OMEMO rewrite] strict signal-normal rewritten len={} first16={}",
                         rewritten.len(),
@@ -1060,73 +1101,76 @@ impl OmemoManager {
                     );
                     parsed = vodozemac::olm::Message::from_bytes(&rewritten).ok();
                     if parsed.is_none() {
-                        tracing::info!("[OMEMO rewrite] strict rewritten candidate still failed vodo parse");
+                        tracing::info!(
+                            "[OMEMO rewrite] strict rewritten candidate still failed vodo parse"
+                        );
                     }
                 }
             }
             match parsed {
                 Some(m) => Some(OlmMessage::Normal(m)),
                 None => match vodozemac::olm::Message::from_bytes(&normalized_key_data) {
-                Ok(m) => Some(OlmMessage::Normal(m)),
-                Err(e1) => {
-                    if normalized_key_data.len() > 1 {
-                        match vodozemac::olm::Message::from_bytes(&normalized_key_data[1..]) {
-                            Ok(m) => {
-                                tracing::info!(
-                                    "[OMEMO decrypt] Parsed OlmMessage after stripping 1-byte prefix"
-                                );
-                                Some(OlmMessage::Normal(m))
-                            }
-                            Err(e2) => {
-                                match std::str::from_utf8(&normalized_key_data)
-                                    .ok()
-                                    .and_then(|s| vodozemac::olm::Message::from_base64(s).ok())
-                                {
-                                    Some(m) => {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] Parsed OlmMessage from base64 text payload"
-                                        );
-                                        Some(OlmMessage::Normal(m))
-                                    }
-                                    None => {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] Failed to parse OlmMessage: {}; retry_without_prefix: {}; len={} first16={} normalized_first16={}",
-                                            e1,
-                                            e2,
-                                            key_slot.data.len(),
-                                            first_bytes_hex(&key_slot.data, 16),
-                                            first_bytes_hex(&normalized_key_data, 16)
-                                        );
-                                        return None;
+                    Ok(m) => Some(OlmMessage::Normal(m)),
+                    Err(e1) => {
+                        if normalized_key_data.len() > 1 {
+                            match vodozemac::olm::Message::from_bytes(&normalized_key_data[1..]) {
+                                Ok(m) => {
+                                    tracing::info!(
+                                        "[OMEMO decrypt] Parsed OlmMessage after stripping 1-byte prefix"
+                                    );
+                                    Some(OlmMessage::Normal(m))
+                                }
+                                Err(e2) => {
+                                    match std::str::from_utf8(&normalized_key_data)
+                                        .ok()
+                                        .and_then(|s| vodozemac::olm::Message::from_base64(s).ok())
+                                    {
+                                        Some(m) => {
+                                            tracing::info!(
+                                                "[OMEMO decrypt] Parsed OlmMessage from base64 text payload"
+                                            );
+                                            Some(OlmMessage::Normal(m))
+                                        }
+                                        None => {
+                                            tracing::info!(
+                                                "[OMEMO decrypt] Failed to parse OlmMessage: {}; retry_without_prefix: {}; len={} first16={} normalized_first16={}",
+                                                e1,
+                                                e2,
+                                                key_slot.data.len(),
+                                                first_bytes_hex(&key_slot.data, 16),
+                                                first_bytes_hex(&normalized_key_data, 16)
+                                            );
+                                            return None;
+                                        }
                                     }
                                 }
                             }
-                        }
-                    } else {
-                        match std::str::from_utf8(&normalized_key_data)
-                            .ok()
-                            .and_then(|s| vodozemac::olm::Message::from_base64(s).ok())
-                        {
-                            Some(m) => {
-                                tracing::info!(
-                                    "[OMEMO decrypt] Parsed OlmMessage from base64 text payload"
-                                );
-                                Some(OlmMessage::Normal(m))
-                            }
-                            None => {
-                                tracing::info!(
-                                    "[OMEMO decrypt] Failed to parse OlmMessage: {}; len={} first16={} normalized_first16={}",
-                                    e1,
-                                    key_slot.data.len(),
-                                    first_bytes_hex(&key_slot.data, 16),
-                                    first_bytes_hex(&normalized_key_data, 16)
-                                );
-                                return None;
+                        } else {
+                            match std::str::from_utf8(&normalized_key_data)
+                                .ok()
+                                .and_then(|s| vodozemac::olm::Message::from_base64(s).ok())
+                            {
+                                Some(m) => {
+                                    tracing::info!(
+                                        "[OMEMO decrypt] Parsed OlmMessage from base64 text payload"
+                                    );
+                                    Some(OlmMessage::Normal(m))
+                                }
+                                None => {
+                                    tracing::info!(
+                                        "[OMEMO decrypt] Failed to parse OlmMessage: {}; len={} first16={} normalized_first16={}",
+                                        e1,
+                                        key_slot.data.len(),
+                                        first_bytes_hex(&key_slot.data, 16),
+                                        first_bytes_hex(&normalized_key_data, 16)
+                                    );
+                                    return None;
+                                }
                             }
                         }
                     }
-                }
-            }}
+                },
+            }
         };
 
         let plaintext = if key_slot.kex {
@@ -1150,7 +1194,8 @@ impl OmemoManager {
                     }
                 }
                 for prekey_raw in prekey_candidates {
-                    let Ok(prekey_msg) = PreKeySignalMessage::try_from(prekey_raw.as_slice()) else {
+                    let Ok(prekey_msg) = PreKeySignalMessage::try_from(prekey_raw.as_slice())
+                    else {
                         continue;
                     };
                     let req_spk: u32 = prekey_msg.signed_pre_key_id().into();
@@ -1212,16 +1257,21 @@ impl OmemoManager {
                         self.stale_prekey_self_healed = true;
                         tracing::info!(
                             "[OMEMO] Stale signed-prekey id={} (current={}, prev={}) detected; ignoring auto-rotate to preserve session continuity",
-                            requested_spk_id, current_spk_id, prev_spk_id
+                            requested_spk_id,
+                            current_spk_id,
+                            prev_spk_id
                         );
                     }
-                    let remote = ProtocolAddress::new(
-                        from_bare.to_string(),
-                        DeviceId::from(msg.header.sid),
-                    );
+                    let remote =
+                        ProtocolAddress::new(from_bare.to_string(), DeviceId::from(msg.header.sid));
                     for (label, store) in [
                         ("current", base_store.clone()),
-                        ("previous-fallback", self.signal_store_prev.clone().unwrap_or_else(|| base_store.clone())),
+                        (
+                            "previous-fallback",
+                            self.signal_store_prev
+                                .clone()
+                                .unwrap_or_else(|| base_store.clone()),
+                        ),
                     ] {
                         for use_pq in [UsePQRatchet::No, UsePQRatchet::Yes] {
                             let pq_label = match use_pq {
@@ -1267,7 +1317,8 @@ impl OmemoManager {
                                     } else if pt.len() == 48 {
                                         let key: [u8; 32] = pt[..32].try_into().ok()?;
                                         let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                        let body = crypto::decrypt_payload_v0(payload, &key, &hmac)?;
+                                        let body =
+                                            crypto::decrypt_payload_v0(payload, &key, &hmac)?;
                                         return String::from_utf8(body).ok();
                                     }
                                 }
@@ -1276,13 +1327,16 @@ impl OmemoManager {
                                     if err_txt.contains("DuplicatedMessage") {
                                         tracing::info!(
                                             "[OMEMO decrypt] duplicate prekey message ignored ({}, pq={})",
-                                            label, pq_label
+                                            label,
+                                            pq_label
                                         );
                                         return None;
                                     }
                                     tracing::info!(
                                         "[OMEMO decrypt] libsignal prekey decrypt failed ({}, pq={}): {:?}",
-                                        label, pq_label, e
+                                        label,
+                                        pq_label,
+                                        e
                                     );
                                 }
                             }
@@ -1298,10 +1352,8 @@ impl OmemoManager {
                 if let Some(r) = rewrite_signalish_normal_for_vodo_strict(&key_slot.data) {
                     normal_candidates.push(r);
                 }
-                let remote = ProtocolAddress::new(
-                    from_bare.to_string(),
-                    DeviceId::from(msg.header.sid),
-                );
+                let remote =
+                    ProtocolAddress::new(from_bare.to_string(), DeviceId::from(msg.header.sid));
                 for raw in normal_candidates {
                     if let Ok(sig_msg) =
                         wa_rs_libsignal::protocol::SignalMessage::try_from(raw.as_slice())
@@ -1328,7 +1380,8 @@ impl OmemoManager {
                                 Ok(pt) => {
                                     tracing::info!(
                                         "[OMEMO decrypt] libsignal normal fallback on kex=true succeeded ({}) len={}",
-                                        label, pt.len()
+                                        label,
+                                        pt.len()
                                     );
                                     self.signal_store = Some(session_store);
                                     let payload = msg.payload.as_ref()?;
@@ -1347,14 +1400,16 @@ impl OmemoManager {
                                     } else if pt.len() == 48 {
                                         let key: [u8; 32] = pt[..32].try_into().ok()?;
                                         let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                        let body = crypto::decrypt_payload_v0(payload, &key, &hmac)?;
+                                        let body =
+                                            crypto::decrypt_payload_v0(payload, &key, &hmac)?;
                                         return String::from_utf8(body).ok();
                                     }
                                 }
                                 Err(e) => {
                                     tracing::info!(
                                         "[OMEMO decrypt] libsignal normal fallback on kex=true failed ({}): {:?}",
-                                        label, e
+                                        label,
+                                        e
                                     );
                                 }
                             }
@@ -1381,21 +1436,21 @@ impl OmemoManager {
             for strip_inner in [true, false] {
                 for strip_bi in [true, false] {
                     for prefix_otk in [false, true] {
-                    for normalize_inner_version in [false, true] {
-                    if let Some(vodo) = signal_to_vodo_prekey_bytes(
-                        &key_slot.data,
-                        &local_otk_by_id,
-                        strip_inner,
-                        strip_bi,
-                        prefix_otk,
-                        normalize_inner_version,
-                    ) {
-                        candidates.push(vodo.clone());
-                        if let Some(swapped) = swap_vodo_prekey_base_identity(&vodo) {
-                            candidates.push(swapped);
+                        for normalize_inner_version in [false, true] {
+                            if let Some(vodo) = signal_to_vodo_prekey_bytes(
+                                &key_slot.data,
+                                &local_otk_by_id,
+                                strip_inner,
+                                strip_bi,
+                                prefix_otk,
+                                normalize_inner_version,
+                            ) {
+                                candidates.push(vodo.clone());
+                                if let Some(swapped) = swap_vodo_prekey_base_identity(&vodo) {
+                                    candidates.push(swapped);
+                                }
+                            }
                         }
-                    }
-                    }
                     }
                 }
             }
@@ -1410,8 +1465,13 @@ impl OmemoManager {
                 };
                 parsed_any = true;
                 let sender_ik = prekey_msg.identity_key();
-                let mut temp_account = vodozemac::olm::Account::from_pickle(self.account.inner.pickle());
-                let inbound = match session::create_inbound_session(&mut temp_account, sender_ik, &prekey_msg) {
+                let mut temp_account =
+                    vodozemac::olm::Account::from_pickle(self.account.inner.pickle());
+                let inbound = match session::create_inbound_session(
+                    &mut temp_account,
+                    sender_ik,
+                    &prekey_msg,
+                ) {
                     Ok(v) => v,
                     Err(e) => {
                         if first_err.is_none() {
@@ -1426,26 +1486,24 @@ impl OmemoManager {
                     .entry(from_bare.to_string())
                     .or_default()
                     .insert(msg.header.sid, inbound.session);
-                return String::from_utf8(
-                    if plaintext.len() == 32 {
-                        let payload = msg.payload.as_ref()?;
-                        let iv = msg.header.iv.as_ref()?;
-                        if iv.len() != 12 {
-                            return None;
-                        }
-                        let key: [u8; 16] = plaintext[..16].try_into().ok()?;
-                        let tag: [u8; 16] = plaintext[16..32].try_into().ok()?;
-                        let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                        crypto::decrypt_payload_v0_conversations(payload, &key, &tag, &nonce)?
-                    } else if plaintext.len() == 48 {
-                        let payload = msg.payload.as_ref()?;
-                        let key: [u8; 32] = plaintext[..32].try_into().ok()?;
-                        let hmac: [u8; 16] = plaintext[32..48].try_into().ok()?;
-                        crypto::decrypt_payload_v0(payload, &key, &hmac)?
-                    } else {
+                return String::from_utf8(if plaintext.len() == 32 {
+                    let payload = msg.payload.as_ref()?;
+                    let iv = msg.header.iv.as_ref()?;
+                    if iv.len() != 12 {
                         return None;
-                    },
-                )
+                    }
+                    let key: [u8; 16] = plaintext[..16].try_into().ok()?;
+                    let tag: [u8; 16] = plaintext[16..32].try_into().ok()?;
+                    let nonce: [u8; 12] = iv[..12].try_into().ok()?;
+                    crypto::decrypt_payload_v0_conversations(payload, &key, &tag, &nonce)?
+                } else if plaintext.len() == 48 {
+                    let payload = msg.payload.as_ref()?;
+                    let key: [u8; 32] = plaintext[..32].try_into().ok()?;
+                    let hmac: [u8; 16] = plaintext[32..48].try_into().ok()?;
+                    crypto::decrypt_payload_v0(payload, &key, &hmac)?
+                } else {
+                    return None;
+                })
                 .ok();
             }
             if !parsed_any {
@@ -1474,7 +1532,9 @@ impl OmemoManager {
                 let remote =
                     ProtocolAddress::new(from_bare.to_string(), DeviceId::from(msg.header.sid));
                 for raw in sig_candidates {
-                    if let Ok(sig_msg) = wa_rs_libsignal::protocol::SignalMessage::try_from(raw.as_slice()) {
+                    if let Ok(sig_msg) =
+                        wa_rs_libsignal::protocol::SignalMessage::try_from(raw.as_slice())
+                    {
                         for (label, store) in [
                             ("current", base_store.clone()),
                             (
@@ -1517,14 +1577,16 @@ impl OmemoManager {
                                     } else if pt.len() == 48 {
                                         let key: [u8; 32] = pt[..32].try_into().ok()?;
                                         let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                        let body = crypto::decrypt_payload_v0(payload, &key, &hmac)?;
+                                        let body =
+                                            crypto::decrypt_payload_v0(payload, &key, &hmac)?;
                                         return String::from_utf8(body).ok();
                                     }
                                 }
                                 Err(e) => {
                                     tracing::info!(
                                         "[OMEMO decrypt] libsignal normal decrypt failed ({}): {:?}",
-                                        label, e
+                                        label,
+                                        e
                                     );
                                 }
                             }
@@ -1574,7 +1636,9 @@ impl OmemoManager {
                                     Ok(pt) => {
                                         tracing::info!(
                                             "[OMEMO decrypt] libsignal prekey-recovery succeeded ({}, pq={}) len={}",
-                                            label, pq_label, pt.len()
+                                            label,
+                                            pq_label,
+                                            pt.len()
                                         );
                                         self.signal_store = Some(session_store);
                                         let payload = msg.payload.as_ref()?;
@@ -1593,14 +1657,17 @@ impl OmemoManager {
                                         } else if pt.len() == 48 {
                                             let key: [u8; 32] = pt[..32].try_into().ok()?;
                                             let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                            let body = crypto::decrypt_payload_v0(payload, &key, &hmac)?;
+                                            let body =
+                                                crypto::decrypt_payload_v0(payload, &key, &hmac)?;
                                             return String::from_utf8(body).ok();
                                         }
                                     }
                                     Err(e) => {
                                         tracing::info!(
                                             "[OMEMO decrypt] libsignal prekey-recovery failed ({}, pq={}): {:?}",
-                                            label, pq_label, e
+                                            label,
+                                            pq_label,
+                                            e
                                         );
                                     }
                                 }
@@ -1643,7 +1710,8 @@ impl OmemoManager {
                                     Ok(pt) => {
                                         tracing::info!(
                                             "[OMEMO decrypt] libsignal normal decrypt succeeded ({}, remote=full) len={}",
-                                            label, pt.len()
+                                            label,
+                                            pt.len()
                                         );
                                         self.signal_store = Some(session_store);
                                         let payload = msg.payload.as_ref()?;
@@ -1670,7 +1738,8 @@ impl OmemoManager {
                                     Err(e) => {
                                         tracing::info!(
                                             "[OMEMO decrypt] libsignal normal decrypt failed ({}, remote=full): {:?}",
-                                            label, e
+                                            label,
+                                            e
                                         );
                                     }
                                 }
@@ -1712,31 +1781,31 @@ impl OmemoManager {
                 }
             }
         };
-            let payload = msg.payload.as_ref()?;
-            if plaintext.len() == 32 {
-                let iv = msg.header.iv.as_ref()?;
-                if iv.len() != 12 {
-                    tracing::info!("[OMEMO decrypt] v0-gcm iv wrong length: {}", iv.len());
-                    return None;
-                }
-                let key: [u8; 16] = plaintext[..16].try_into().ok()?;
-                let tag: [u8; 16] = plaintext[16..32].try_into().ok()?;
-                let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                let body = crypto::decrypt_payload_v0_conversations(payload, &key, &tag, &nonce)?;
-                return String::from_utf8(body).ok();
+        let payload = msg.payload.as_ref()?;
+        if plaintext.len() == 32 {
+            let iv = msg.header.iv.as_ref()?;
+            if iv.len() != 12 {
+                tracing::info!("[OMEMO decrypt] v0-gcm iv wrong length: {}", iv.len());
+                return None;
             }
+            let key: [u8; 16] = plaintext[..16].try_into().ok()?;
+            let tag: [u8; 16] = plaintext[16..32].try_into().ok()?;
+            let nonce: [u8; 12] = iv[..12].try_into().ok()?;
+            let body = crypto::decrypt_payload_v0_conversations(payload, &key, &tag, &nonce)?;
+            return String::from_utf8(body).ok();
+        }
 
-            if plaintext.len() == 48 {
-                let key: [u8; 32] = plaintext[..32].try_into().ok()?;
-                let hmac: [u8; 16] = plaintext[32..48].try_into().ok()?;
-                let body = crypto::decrypt_payload_v0(payload, &key, &hmac)?;
-                return String::from_utf8(body).ok();
-            }
+        if plaintext.len() == 48 {
+            let key: [u8; 32] = plaintext[..32].try_into().ok()?;
+            let hmac: [u8; 16] = plaintext[32..48].try_into().ok()?;
+            let body = crypto::decrypt_payload_v0(payload, &key, &hmac)?;
+            return String::from_utf8(body).ok();
+        }
 
-            tracing::info!(
-                "[OMEMO decrypt] v0 plaintext wrong length: {}",
-                plaintext.len()
-            );
-            None
+        tracing::info!(
+            "[OMEMO decrypt] v0 plaintext wrong length: {}",
+            plaintext.len()
+        );
+        None
     }
 }

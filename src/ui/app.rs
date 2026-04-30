@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use iced::widget::operation;
-use iced::widget::{Column, Space, button, image, row, text};
+use iced::widget::{Column, Space, button, image, row, text, text_editor};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme, stream, window};
 
 use crate::models::account::{Account, ConnectionStatus};
@@ -80,6 +80,10 @@ pub enum Message {
     TrayQuitRequested,
     ConfirmQuitDiscard,
     ConfirmQuitCancel,
+    ChatMessageBodyAction {
+        message_id: String,
+        action: text_editor::Action,
+    },
 
     // XMPP events
     XmppEvent(XmppEvent),
@@ -114,6 +118,28 @@ pub struct AppState {
     pub main_window_id: Option<window::Id>,
     pub window_hidden_to_tray: bool,
     pub show_unsaved_quit_confirm: bool,
+    pub chat_message_bodies: HashMap<String, text_editor::Content>,
+}
+
+fn refresh_chat_message_bodies(state: &mut AppState) {
+    let Some(idx) = state.selected_conversation else {
+        state.chat_message_bodies.clear();
+        return;
+    };
+    let Some(conv) = state.conversations.get(idx) else {
+        state.chat_message_bodies.clear();
+        return;
+    };
+
+    let mut next = HashMap::with_capacity(conv.messages.len());
+    for msg in &conv.messages {
+        let content = state
+            .chat_message_bodies
+            .remove(&msg.id)
+            .unwrap_or_else(|| text_editor::Content::with_text(&msg.body));
+        next.insert(msg.id.clone(), content);
+    }
+    state.chat_message_bodies = next;
 }
 
 impl Default for AppState {
@@ -138,6 +164,7 @@ impl Default for AppState {
             main_window_id: None,
             window_hidden_to_tray: true,
             show_unsaved_quit_confirm: false,
+            chat_message_bodies: HashMap::new(),
         };
 
         if let Ok(config) = load_config() {
@@ -212,6 +239,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::ConversationSelected(idx) => {
             state.selected_conversation = Some(idx);
+            refresh_chat_message_bodies(state);
             let selected_jid = state.conversations.get(idx).map(|c| c.contact_jid.clone());
             if let Some(conv) = state.conversations.get_mut(idx) {
                 conv.mark_read();
@@ -236,6 +264,14 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::DraftChanged(text) => {
             state.draft = text;
+            Task::none()
+        }
+        Message::ChatMessageBodyAction { message_id, action } => {
+            if !action.is_edit() {
+                if let Some(content) = state.chat_message_bodies.get_mut(&message_id) {
+                    content.perform(action);
+                }
+            }
             Task::none()
         }
         Message::SendMessageClicked => {
@@ -269,6 +305,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             if let Some(conv) = state.conversations.get_mut(idx) {
                 conv.add_message(msg);
             }
+            refresh_chat_message_bodies(state);
             state.draft.clear();
             sort_conversations(state);
 
@@ -409,6 +446,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                                 .count();
                         }
                         sort_conversations(state);
+                        refresh_chat_message_bodies(state);
                     }
                     Err(e) => tracing::info!("[UI] Failed to load history: {}", e),
                 }
@@ -428,6 +466,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 state.omemo_qr_uri = None;
                 state.omemo_qr_handle = None;
                 state.avatar_handles.clear();
+                refresh_chat_message_bodies(state);
                 Task::none()
             }
             XmppEvent::ConnectionError(err) => {
@@ -509,6 +548,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
 
                 sort_conversations(state);
+                refresh_chat_message_bodies(state);
                 if is_incoming && state.window_hidden_to_tray {
                     crate::notify::incoming_message(&from_bare, &notify_body);
                 }
@@ -558,6 +598,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
 
                 sort_conversations(state);
+                refresh_chat_message_bodies(state);
                 if is_incoming && state.window_hidden_to_tray {
                     crate::notify::incoming_message(&from, &notify_body);
                 }
@@ -617,7 +658,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             let selected_conv = state
                 .selected_conversation
                 .and_then(|idx| state.conversations.get(idx));
-            let chat_view = chat::view(selected_conv, &state.draft);
+            let chat_view = chat::view(selected_conv, &state.draft, &state.chat_message_bodies);
 
             let content = row![sidebar, chat_view].spacing(0);
 
@@ -685,17 +726,17 @@ pub fn subscription(_state: &AppState) -> Subscription<Message> {
         stream::channel(
             64,
             |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
-            loop {
-                while let Some(event) = crate::tray::try_recv_event() {
-                    let msg = match event {
-                        crate::tray::TrayEvent::ShowRequested => Message::TrayShowRequested,
-                        crate::tray::TrayEvent::QuitRequested => Message::TrayQuitRequested,
-                    };
-                    let _ = output.send(msg).await;
+                loop {
+                    while let Some(event) = crate::tray::try_recv_event() {
+                        let msg = match event {
+                            crate::tray::TrayEvent::ShowRequested => Message::TrayShowRequested,
+                            crate::tray::TrayEvent::QuitRequested => Message::TrayQuitRequested,
+                        };
+                        let _ = output.send(msg).await;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        },
+            },
         )
     });
 

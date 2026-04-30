@@ -9,7 +9,12 @@ pub enum TrayEvent {
 static TRAY_EVENTS: OnceLock<Mutex<std::sync::mpsc::Receiver<TrayEvent>>> = OnceLock::new();
 
 pub fn init_tray() {
-    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
     gtk_tray::init_tray_impl();
 }
 
@@ -19,7 +24,12 @@ pub fn try_recv_event() -> Option<TrayEvent> {
     guard.try_recv().ok()
 }
 
-#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
 mod gtk_tray {
     use std::ffi::CString;
     use std::os::raw::c_void;
@@ -79,7 +89,8 @@ mod gtk_tray {
         let _ = TRAY_EVENTS.set(std::sync::Mutex::new(event_rx));
 
         std::thread::spawn(move || {
-            let ok: gboolean = unsafe { gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut()) };
+            let ok: gboolean =
+                unsafe { gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut()) };
             if ok == 0 {
                 tracing::info!("Failed to init GTK tray");
                 return;

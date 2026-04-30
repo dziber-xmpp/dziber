@@ -123,13 +123,15 @@ impl OmemoAccount {
     pub fn fallback_secret_key_bytes(&self) -> Option<(u32, [u8; 32])> {
         let pickle = self.inner.pickle();
         let json = serde_json::to_value(&pickle).ok()?;
-        let current_id = Self::key_id_value_to_u32(&json["fallback_keys"]["fallback_key"]["key_id"]);
+        let current_id =
+            Self::key_id_value_to_u32(&json["fallback_keys"]["fallback_key"]["key_id"]);
         let current_secret = Self::parse_u8_array_32(&json["fallback_keys"]["fallback_key"]["key"]);
         if let (Some(id), Some(secret)) = (current_id, current_secret) {
             return Some((id, secret));
         }
 
-        let prev_id = Self::key_id_value_to_u32(&json["fallback_keys"]["previous_fallback_key"]["key_id"]);
+        let prev_id =
+            Self::key_id_value_to_u32(&json["fallback_keys"]["previous_fallback_key"]["key_id"]);
         let prev_secret =
             Self::parse_u8_array_32(&json["fallback_keys"]["previous_fallback_key"]["key"]);
         if let (Some(id), Some(secret)) = (prev_id, prev_secret) {
@@ -197,7 +199,6 @@ impl OmemoAccount {
         }
         out
     }
-
 
     pub fn identity_secret_key_bytes(&self) -> Option<[u8; 32]> {
         let pickle = self.inner.pickle();

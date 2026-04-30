@@ -1,5 +1,10 @@
-use iced::widget::{Column, Space, button, column, container, row, scrollable, text, text_input};
-use iced::{Alignment, Element, Length, Padding, Theme};
+use std::collections::HashMap;
+
+use iced::widget::{
+    Column, Space, button, column, container, row, scrollable, text, text_editor, text_input,
+};
+use iced::{Alignment, Background, Color, Element, Length, Padding, Theme};
+use iced::widget::text::Wrapping;
 
 use crate::models::conversation::Conversation;
 use crate::models::message::{Direction, MessageStatus};
@@ -8,7 +13,18 @@ use super::app::Message;
 
 pub const CHAT_SCROLL_ID: &str = "chat_messages_scroll";
 
-pub fn view<'a>(conversation: Option<&'a Conversation>, draft: &'a str) -> Element<'a, Message> {
+fn body_width_px(body: &str) -> u32 {
+    let longest_line = body.lines().map(|l| l.chars().count()).max().unwrap_or(1) as u32;
+    // Approximate glyph width at size 13; clamp so short messages stay narrow
+    // and long messages wrap instead of clipping.
+    (longest_line.saturating_mul(8) + 16).clamp(72, 520)
+}
+
+pub fn view<'a>(
+    conversation: Option<&'a Conversation>,
+    draft: &'a str,
+    chat_message_bodies: &'a HashMap<String, text_editor::Content>,
+) -> Element<'a, Message> {
     let Some(conv) = conversation else {
         return container(
             text("Select a conversation")
@@ -62,8 +78,42 @@ pub fn view<'a>(conversation: Option<&'a Conversation>, draft: &'a str) -> Eleme
                 row![text(format!("{}", msg.timestamp.format("%H:%M"))).size(9),]
             };
 
-            let bubble = container(column![text(&msg.body).size(13), meta_row,].spacing(2))
+            let body_editor: Element<Message> =
+                if let Some(content) = chat_message_bodies.get(&msg.id) {
+                    let width = body_width_px(&msg.body);
+                    text_editor(content)
+                        .on_action({
+                            let id = msg.id.clone();
+                            move |action| Message::ChatMessageBodyAction {
+                                message_id: id.clone(),
+                                action,
+                            }
+                        })
+                        .style(|theme, status| {
+                            let mut style = text_editor::default(theme, status);
+                            style.background = Background::Color(Color::TRANSPARENT);
+                            style.border.width = 0.0;
+                            style
+                        })
+                        .width(width)
+                        .size(13)
+                        .wrapping(Wrapping::Word)
+                        .min_height(18)
+                        .padding(Padding {
+                            top: 1.0,
+                            right: 2.0,
+                            bottom: 1.0,
+                            left: 2.0,
+                        })
+                        .height(Length::Shrink)
+                        .into()
+                } else {
+                    text(&msg.body).size(13).into()
+                };
+
+            let bubble = container(column![body_editor, meta_row].spacing(2))
                 .padding(8)
+                .width(Length::Shrink)
                 .style(move |theme: &Theme| {
                     if is_outgoing {
                         container::background(theme.extended_palette().primary.strong.color)

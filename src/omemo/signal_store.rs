@@ -5,7 +5,7 @@ use wa_rs_libsignal::protocol::error::Result as SignalResult;
 use wa_rs_libsignal::protocol::{
     Direction, GenericSignedPreKey, IdentityChange, IdentityKey, IdentityKeyPair, IdentityKeyStore,
     KeyPair, PreKeyId, PreKeyRecord, PreKeyStore, ProtocolAddress, SessionRecord, SessionStore,
-    SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore, SignalProtocolError, Timestamp,
+    SignalProtocolError, SignedPreKeyId, SignedPreKeyRecord, SignedPreKeyStore, Timestamp,
 };
 
 use super::account::OmemoAccount;
@@ -41,11 +41,25 @@ impl SignalStore {
         account: &OmemoAccount,
         forced_signed_prekey_secret: Option<[u8; 32]>,
     ) -> Option<Self> {
-        let identity_secret = match account.identity_secret_key_bytes() { Some(v) => v, None => { tracing::info!("[signal_store] missing identity_secret_key_bytes"); return None; } };
-        let identity_private = match Self::deserialize_private_tolerant(&identity_secret) { Some(v) => v, None => { tracing::info!("[signal_store] identity private deserialize failed"); return None; } };
+        let identity_secret = match account.identity_secret_key_bytes() {
+            Some(v) => v,
+            None => {
+                tracing::info!("[signal_store] missing identity_secret_key_bytes");
+                return None;
+            }
+        };
+        let identity_private = match Self::deserialize_private_tolerant(&identity_secret) {
+            Some(v) => v,
+            None => {
+                tracing::info!("[signal_store] identity private deserialize failed");
+                return None;
+            }
+        };
         let identity = IdentityKeyPair::try_from(identity_private).ok()?;
 
-        let (signed_prekey_id_u32, signed_prekey_secret) = if let Some(v) = forced_signed_prekey_secret {
+        let (signed_prekey_id_u32, signed_prekey_secret) = if let Some(v) =
+            forced_signed_prekey_secret
+        {
             let spk_id = account
                 .all_stored_fallback_secret_keys()
                 .into_iter()
@@ -57,15 +71,29 @@ impl SignalStore {
         } else {
             let mut otk = account.all_stored_one_time_secret_keys();
             otk.sort_by_key(|(id, _)| *id);
-            if let Some((id, sec)) = otk.iter().find(|(id, _)| *id == 1).copied().or_else(|| otk.first().copied()) {
-                tracing::info!("[signal_store] fallback missing; using one-time prekey secret as signed-prekey substitute");
+            if let Some((id, sec)) = otk
+                .iter()
+                .find(|(id, _)| *id == 1)
+                .copied()
+                .or_else(|| otk.first().copied())
+            {
+                tracing::info!(
+                    "[signal_store] fallback missing; using one-time prekey secret as signed-prekey substitute"
+                );
                 (id, sec)
             } else {
                 tracing::info!("[signal_store] missing fallback and no one-time secret keys");
                 return None;
             }
         };
-        let signed_prekey_private = match Self::deserialize_private_tolerant(&signed_prekey_secret) { Some(v) => v, None => { tracing::info!("[signal_store] signed prekey deserialize failed"); return None; } };
+        let signed_prekey_private = match Self::deserialize_private_tolerant(&signed_prekey_secret)
+        {
+            Some(v) => v,
+            None => {
+                tracing::info!("[signal_store] signed prekey deserialize failed");
+                return None;
+            }
+        };
         let signed_prekey_public = signed_prekey_private.public_key().ok()?;
         let signed_prekey_keypair = KeyPair::new(signed_prekey_public, signed_prekey_private);
         let signed_prekey_sig = account.xeddsa_sign(&signed_prekey_keypair.public_key.serialize());
@@ -156,7 +184,9 @@ impl SignalStore {
         })
     }
 
-    fn deserialize_private_tolerant(secret: &[u8; 32]) -> Option<wa_rs_libsignal::protocol::PrivateKey> {
+    fn deserialize_private_tolerant(
+        secret: &[u8; 32],
+    ) -> Option<wa_rs_libsignal::protocol::PrivateKey> {
         if let Ok(v) = wa_rs_libsignal::protocol::PrivateKey::deserialize(secret) {
             return Some(v);
         }
@@ -204,17 +234,25 @@ impl SignalStore {
         ids.sort_unstable();
         ids
     }
-
 }
 
 #[async_trait::async_trait]
 impl IdentityKeyStore for SignalStore {
     async fn get_identity_key_pair(&self) -> SignalResult<IdentityKeyPair> {
-        Ok(self.inner.lock().expect("signal store poisoned").identity.clone())
+        Ok(self
+            .inner
+            .lock()
+            .expect("signal store poisoned")
+            .identity
+            .clone())
     }
 
     async fn get_local_registration_id(&self) -> SignalResult<u32> {
-        Ok(self.inner.lock().expect("signal store poisoned").registration_id)
+        Ok(self
+            .inner
+            .lock()
+            .expect("signal store poisoned")
+            .registration_id)
     }
 
     async fn save_identity(
@@ -224,7 +262,10 @@ impl IdentityKeyStore for SignalStore {
     ) -> SignalResult<IdentityChange> {
         let mut guard = self.inner.lock().expect("signal store poisoned");
         let key = address.to_string();
-        let changed = guard.trusted.get(&key).is_some_and(|existing| existing != identity);
+        let changed = guard
+            .trusted
+            .get(&key)
+            .is_some_and(|existing| existing != identity);
         guard.trusted.insert(key, *identity);
         Ok(IdentityChange::from_changed(changed))
     }
@@ -281,7 +322,11 @@ impl PreKeyStore for SignalStore {
         Err(SignalProtocolError::InvalidPreKeyId)
     }
 
-    async fn save_pre_key(&mut self, prekey_id: PreKeyId, record: &PreKeyRecord) -> SignalResult<()> {
+    async fn save_pre_key(
+        &mut self,
+        prekey_id: PreKeyId,
+        record: &PreKeyRecord,
+    ) -> SignalResult<()> {
         self.inner
             .lock()
             .expect("signal store poisoned")
@@ -291,14 +336,21 @@ impl PreKeyStore for SignalStore {
     }
 
     async fn remove_pre_key(&mut self, prekey_id: PreKeyId) -> SignalResult<()> {
-        self.inner.lock().expect("signal store poisoned").prekeys.remove(&prekey_id);
+        self.inner
+            .lock()
+            .expect("signal store poisoned")
+            .prekeys
+            .remove(&prekey_id);
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl SignedPreKeyStore for SignalStore {
-    async fn get_signed_pre_key(&self, signed_prekey_id: SignedPreKeyId) -> SignalResult<SignedPreKeyRecord> {
+    async fn get_signed_pre_key(
+        &self,
+        signed_prekey_id: SignedPreKeyId,
+    ) -> SignalResult<SignedPreKeyRecord> {
         let guard = self.inner.lock().expect("signal store poisoned");
         if let Some(rec) = guard.signed_prekeys.get(&signed_prekey_id) {
             return Ok(rec.clone());
@@ -322,7 +374,9 @@ impl SignedPreKeyStore for SignalStore {
         let mut guard = self.inner.lock().expect("signal store poisoned");
         guard.signed_prekey_id = signed_prekey_id;
         guard.signed_prekey = record.clone();
-        guard.signed_prekeys.insert(signed_prekey_id, record.clone());
+        guard
+            .signed_prekeys
+            .insert(signed_prekey_id, record.clone());
         Ok(())
     }
 }
@@ -356,7 +410,8 @@ impl SessionStore for SignalStore {
             if k_bare == req_bare {
                 tracing::info!(
                     "[OMEMO signal] load_session fallback hit req={} matched={}",
-                    key, k
+                    key,
+                    k
                 );
                 return Ok(Some(rec.clone()));
             }
@@ -364,11 +419,13 @@ impl SessionStore for SignalStore {
         Ok(None)
     }
 
-    async fn store_session(&mut self, address: &ProtocolAddress, record: &SessionRecord) -> SignalResult<()> {
+    async fn store_session(
+        &mut self,
+        address: &ProtocolAddress,
+        record: &SessionRecord,
+    ) -> SignalResult<()> {
         let mut guard = self.inner.lock().expect("signal store poisoned");
-        guard
-            .sessions
-            .insert(address.to_string(), record.clone());
+        guard.sessions.insert(address.to_string(), record.clone());
         let mut raw = HashMap::new();
         for (addr, rec) in &guard.sessions {
             if let Ok(bytes) = rec.serialize() {
