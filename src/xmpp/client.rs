@@ -179,33 +179,30 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let carbons_iq = build_carbons_enable_iq();
                                 let _ = safe_send_stanza(c, carbons_iq.into(), "worker-loop", &mut stream_healthy).await;
 
-                                // Fetch recent MAM history (XEP-0313).
-                                // Send as IQ set with MAM form; many servers ignore iq/get or queries without FORM_TYPE.
-                                let mam_query = xmpp_parsers::mam::Query {
-                                    queryid: Some(xmpp_parsers::mam::QueryId("mam-sync".to_string())),
-                                    node: None,
-                                    form: Some(xmpp_parsers::data_forms::DataForm {
-                                        type_: xmpp_parsers::data_forms::DataFormType::Submit,
-                                        title: None,
-                                        instructions: None,
-                                        fields: vec![
-                                            xmpp_parsers::data_forms::Field::new(
-                                                "FORM_TYPE",
-                                                xmpp_parsers::data_forms::FieldType::Hidden,
-                                            )
-                                            .with_value("urn:xmpp:mam:2"),
-                                        ],
-                                    }),
-                                    set: Some(xmpp_parsers::rsm::SetQuery {
-                                        max: Some(50),
-                                        after: None,
-                                        // Request the last page (most recent messages) on initial sync.
-                                        before: Some(String::new()),
-                                        index: None,
-                                    }),
-                                    flip_page: false,
+                                // Fetch bookmarked rooms (XEP-0048 via private storage).
+                                let bookmarks_iq = build_bookmarks_fetch_iq();
+                                let bookmarks_id = match &bookmarks_iq {
+                                    Iq::Get { id, .. } | Iq::Set { id, .. } => id.clone(),
+                                    _ => String::new(),
                                 };
-                                let mam_iq = Iq::from_set("mam-query", mam_query);
+                                if !bookmarks_id.is_empty() {
+                                    pending_iqs.insert(bookmarks_id, PendingIq::Bookmarks);
+                                }
+                                let _ = safe_send_stanza(
+                                    c,
+                                    bookmarks_iq.into(),
+                                    "worker-loop",
+                                    &mut stream_healthy,
+                                )
+                                .await;
+
+                                // Fetch recent direct-message history (XEP-0313).
+                                let mam_iq = build_mam_query_iq(
+                                    "mam-query",
+                                    "mam-sync",
+                                    None,
+                                    Some(String::new()),
+                                );
                                 tracing::info!("[MAM] Sending query: max=50 (mam:2)");
                                 let _ = safe_send_stanza(c, mam_iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
@@ -536,6 +533,7 @@ enum PendingIq {
     AvatarData {
         jid: String,
     },
+    Bookmarks,
     VCardAvatar {
         jid: String,
     },
@@ -600,6 +598,54 @@ fn build_carbons_enable_iq() -> Iq {
     }
 }
 
+fn build_bookmarks_fetch_iq() -> Iq {
+    let storage = Element::builder("storage", "storage:bookmarks").build();
+    let query = Element::builder("query", "jabber:iq:private")
+        .append(storage)
+        .build();
+    Iq::Get {
+        id: String::from("bookmarks-get"),
+        from: None,
+        to: None,
+        payload: query,
+    }
+}
+
+fn build_mam_query_iq(
+    id: impl Into<String>,
+    queryid: impl Into<String>,
+    to: Option<Jid>,
+    before: Option<String>,
+) -> Iq {
+    let mam_query = xmpp_parsers::mam::Query {
+        queryid: Some(xmpp_parsers::mam::QueryId(queryid.into())),
+        node: None,
+        form: Some(xmpp_parsers::data_forms::DataForm {
+            type_: xmpp_parsers::data_forms::DataFormType::Submit,
+            title: None,
+            instructions: None,
+            fields: vec![
+                xmpp_parsers::data_forms::Field::new(
+                    "FORM_TYPE",
+                    xmpp_parsers::data_forms::FieldType::Hidden,
+                )
+                .with_value("urn:xmpp:mam:2"),
+            ],
+        }),
+        set: Some(xmpp_parsers::rsm::SetQuery {
+            max: Some(50),
+            after: None,
+            // Empty string requests the most recent page; non-empty paginates older pages.
+            before,
+            index: None,
+        }),
+        flip_page: false,
+    };
+    let mut iq = Iq::from_set(id.into(), mam_query);
+    *iq.to_mut() = to;
+    iq
+}
+
 async fn process_message(
     msg: XmppMessage,
     output: &mut mpsc::Sender<XmppEvent>,
@@ -608,6 +654,7 @@ async fn process_message(
     from: Jid,
     timestamp: Option<DateTime<Utc>>,
     our_jid: Option<&str>,
+    archive_id: Option<String>,
 ) {
     fn hex(data: &[u8]) -> String {
         data.iter()
@@ -617,6 +664,22 @@ async fn process_message(
     }
 
     let from_bare = from.to_bare().to_string();
+
+    // Prefer protocol-level stable IDs for dedup across reconnect/history sync.
+    let stanza_id = msg
+        .payloads
+        .iter()
+        .find(|p| p.name() == "stanza-id" && p.ns() == "urn:xmpp:sid:0")
+        .and_then(|p| p.attr("id"))
+        .map(std::string::ToString::to_string);
+    let stable_id = || {
+        msg.id
+            .as_ref()
+            .map(|id| id.0.clone())
+            .or_else(|| stanza_id.clone())
+            .or_else(|| archive_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    };
 
     // Check for OMEMO payload (v0)
     let mut omemo_decrypted = None;
@@ -687,10 +750,7 @@ async fn process_message(
         .any(|p| p.name() == "encrypted" && (p.ns() == NS_OMEMO_V0));
     if !msg.bodies.contains_key("") && direction == Direction::Outgoing && has_omemo_payload {
         let placeholder = Message {
-            id: msg
-                .id
-                .map(|id| id.0)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            id: stable_id(),
             from: from.to_string(),
             body: String::from("🔒 Encrypted message (sent from another device)"),
             timestamp: timestamp.unwrap_or_else(Utc::now),
@@ -707,10 +767,7 @@ async fn process_message(
             Direction::Incoming => MessageStatus::Received,
         };
         let message = Message {
-            id: msg
-                .id
-                .map(|id| id.0)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            id: stable_id(),
             from: from.to_string(),
             body: body.to_string(),
             timestamp: timestamp.unwrap_or_else(Utc::now),
@@ -790,6 +847,7 @@ async fn handle_stanza(
                                 to,
                                 timestamp,
                                 our_jid,
+                                Some(mam_result.id.to_string()),
                             )
                             .await;
                         }
@@ -805,6 +863,7 @@ async fn handle_stanza(
                                 from,
                                 timestamp,
                                 our_jid,
+                                Some(mam_result.id.to_string()),
                             )
                             .await;
                         }
@@ -819,6 +878,7 @@ async fn handle_stanza(
                             from,
                             timestamp,
                             our_jid,
+                            Some(mam_result.id.to_string()),
                         )
                         .await;
                     }
@@ -845,6 +905,7 @@ async fn handle_stanza(
                                 from,
                                 None,
                                 our_jid,
+                                None,
                             )
                             .await;
                         }
@@ -859,6 +920,7 @@ async fn handle_stanza(
                                 to,
                                 None,
                                 our_jid,
+                                None,
                             )
                             .await;
                         }
@@ -873,7 +935,17 @@ async fn handle_stanza(
                     from,
                     msg.bodies.get("")
                 );
-                process_message(msg, output, omemo, Direction::Incoming, from, None, our_jid).await;
+                process_message(
+                    msg,
+                    output,
+                    omemo,
+                    Direction::Incoming,
+                    from,
+                    None,
+                    our_jid,
+                    None,
+                )
+                .await;
             }
         }
         Stanza::Presence(presence) => {
@@ -906,7 +978,12 @@ async fn handle_stanza(
         }
         Stanza::Iq(iq) => {
             match iq {
-                Iq::Result { id, payload, .. } => {
+                Iq::Result {
+                    id,
+                    from,
+                    payload,
+                    ..
+                } => {
                     if let Some(pending) = pending_iqs.remove(&id) {
                         match pending {
                             PendingIq::HttpUploadSlot {
@@ -1749,6 +1826,74 @@ async fn handle_stanza(
                                     }
                                 }
                             }
+                            PendingIq::Bookmarks => {
+                                let Some(element) = payload else {
+                                    tracing::info!("[BOOKMARKS] Empty private storage response");
+                                    return;
+                                };
+                                if element.name() != "query"
+                                    || element.ns() != "jabber:iq:private"
+                                {
+                                    tracing::info!(
+                                        "[BOOKMARKS] Unexpected payload: name={} ns={}",
+                                        element.name(),
+                                        element.ns()
+                                    );
+                                    return;
+                                }
+                                let mut count = 0usize;
+                                for storage in element.children() {
+                                    if storage.name() != "storage"
+                                        || storage.ns() != "storage:bookmarks"
+                                    {
+                                        continue;
+                                    }
+                                    for conf in storage.children() {
+                                        if conf.name() != "conference" {
+                                            continue;
+                                        }
+                                        let Some(jid) = conf.attr("jid") else {
+                                            continue;
+                                        };
+                                        let name = conf
+                                            .attr("name")
+                                            .map(std::string::ToString::to_string);
+                                        let contact = Contact {
+                                            jid: jid.to_string(),
+                                            name,
+                                            subscription: Subscription::None,
+                                            groups: vec!["Rooms".to_string()],
+                                            presence: Presence::default(),
+                                        };
+                                        let _ = output.send(XmppEvent::RosterItem(contact)).await;
+                                        if let Ok(room_jid) = Jid::from_str(jid) {
+                                            let queryid =
+                                                format!("mam-room-{}", jid.replace('@', "_"));
+                                            let iqid =
+                                                format!("mam-room-query-{}", jid.replace('@', "_"));
+                                            let room_mam_iq = build_mam_query_iq(
+                                                iqid,
+                                                queryid,
+                                                Some(room_jid),
+                                                Some(String::new()),
+                                            );
+                                            tracing::info!(
+                                                "[MAM] Sending room query for {}",
+                                                jid
+                                            );
+                                            let _ = safe_send_stanza(
+                                                client,
+                                                room_mam_iq.into(),
+                                                "stanza-handler",
+                                                stream_healthy,
+                                            )
+                                            .await;
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                                tracing::info!("[BOOKMARKS] Loaded {} rooms", count);
+                            }
                             PendingIq::DeviceListPublish { jid, version } => {
                                 tracing::info!(
                                     "[OMEMO] Device list publish ({}) succeeded for {}",
@@ -1878,6 +2023,42 @@ async fn handle_stanza(
                                 fin.set.last,
                                 fin.set.count
                             );
+                            if !fin.complete
+                                && let Some(first) = fin.set.first.as_ref().map(|f| f.item.clone())
+                            {
+                                if id == "mam-query" {
+                                    let next_iq = build_mam_query_iq(
+                                        "mam-query",
+                                        "mam-sync",
+                                        None,
+                                        Some(first),
+                                    );
+                                    tracing::info!("[MAM] Paginating older direct-history page");
+                                    let _ = safe_send_stanza(
+                                        client,
+                                        next_iq.into(),
+                                        "stanza-handler",
+                                        stream_healthy,
+                                    )
+                                    .await;
+                                } else if id.starts_with("mam-room-query-") {
+                                    let room_to = from.clone();
+                                    let room_queryid = id.replacen("mam-room-query-", "mam-room-", 1);
+                                    let next_iq =
+                                        build_mam_query_iq(id.clone(), room_queryid, room_to, Some(first));
+                                    tracing::info!(
+                                        "[MAM] Paginating older room-history page for id={}",
+                                        id
+                                    );
+                                    let _ = safe_send_stanza(
+                                        client,
+                                        next_iq.into(),
+                                        "stanza-handler",
+                                        stream_healthy,
+                                    )
+                                    .await;
+                                }
+                            }
                             let _ = output
                                 .send(XmppEvent::StatusChanged(if fin.complete {
                                     "History sync complete".to_string()

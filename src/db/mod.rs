@@ -66,3 +66,9 @@ pub fn load_messages(acc_jid: &str) -> Result<Vec<(String, Message)>, Box<dyn st
         .map(|db| (db.contact_jid.clone(), db.to_message()))
         .collect())
 }
+
+pub fn purge_history() -> Result<usize, Box<dyn std::error::Error>> {
+    let mut conn = establish_connection();
+    let deleted = diesel::delete(messages::table).execute(&mut conn)?;
+    Ok(deleted)
+}

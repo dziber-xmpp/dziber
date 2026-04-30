@@ -64,6 +64,12 @@ fn sort_conversations(state: &mut AppState) {
     }
 }
 
+fn omemo_pref_for(account: Option<&Account>, jid: &str) -> bool {
+    account
+        .and_then(|a| a.omemo_prefs.get(jid).copied())
+        .unwrap_or(true)
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     // UI events
@@ -247,6 +253,9 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::ConversationSelected(idx) => {
             state.selected_conversation = Some(idx);
+            if let Some(jid) = state.conversations.get(idx).map(|c| c.contact_jid.as_str()) {
+                state.omemo_enabled = omemo_pref_for(state.account.as_ref(), jid);
+            }
             refresh_chat_message_bodies(state);
             let selected_jid = state.conversations.get(idx).map(|c| c.contact_jid.clone());
             if let Some(conv) = state.conversations.get_mut(idx) {
@@ -405,6 +414,13 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::ToggleOmemo => {
             state.omemo_enabled = !state.omemo_enabled;
+            if let Some(idx) = state.selected_conversation
+                && let Some(jid) = state.conversations.get(idx).map(|c| c.contact_jid.clone())
+                && let Some(account) = state.account.as_mut()
+            {
+                account.omemo_prefs.insert(jid, state.omemo_enabled);
+                let _ = save_config(account);
+            }
             Task::none()
         }
         Message::ToggleOmemoQr => {
@@ -488,6 +504,14 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     let account = Account::new(jid.clone(), state.password_input.clone());
                     let _ = save_config(&account);
                     state.account = Some(account);
+                }
+                if let Some(idx) = state.selected_conversation
+                    && let Some(contact_jid) =
+                        state.conversations.get(idx).map(|c| c.contact_jid.as_str())
+                {
+                    state.omemo_enabled = omemo_pref_for(state.account.as_ref(), contact_jid);
+                } else {
+                    state.omemo_enabled = true;
                 }
 
                 // Load message history from database
@@ -735,7 +759,12 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             let selected_conv = state
                 .selected_conversation
                 .and_then(|idx| state.conversations.get(idx));
-            let chat_view = chat::view(selected_conv, &state.draft, &state.chat_message_bodies);
+            let chat_view = chat::view(
+                selected_conv,
+                &state.draft,
+                &state.chat_message_bodies,
+                &state.avatar_handles,
+            );
 
             let content = row![sidebar, chat_view].spacing(0);
 

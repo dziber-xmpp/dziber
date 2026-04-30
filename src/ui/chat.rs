@@ -44,6 +44,7 @@ pub fn view<'a>(
     conversation: Option<&'a Conversation>,
     draft: &'a str,
     chat_message_bodies: &'a HashMap<String, text_editor::Content>,
+    avatar_handles: &'a HashMap<String, iced::widget::image::Handle>,
 ) -> Element<'a, Message> {
     let Some(conv) = conversation else {
         return container(
@@ -79,6 +80,13 @@ pub fn view<'a>(
         let mut list = Column::new().spacing(8).padding(10);
         for msg in &conv.messages {
             let is_outgoing = msg.direction == Direction::Outgoing;
+            let group_sender = if !is_outgoing {
+                msg.from
+                    .strip_prefix(&(conv.contact_jid.clone() + "/"))
+                    .map(std::string::ToString::to_string)
+            } else {
+                None
+            };
             let status_icon = match msg.status {
                 MessageStatus::Pending => "⏳",
                 MessageStatus::Sent => "✓",
@@ -175,7 +183,13 @@ pub fn view<'a>(
                 text(&msg.body).size(13).into()
             };
 
-            let bubble = container(column![body_editor, meta_row].spacing(2))
+            let bubble_content = if let Some(sender) = &group_sender {
+                column![text(sender.clone()).size(10), body_editor, meta_row].spacing(2)
+            } else {
+                column![body_editor, meta_row].spacing(2)
+            };
+
+            let bubble = container(bubble_content)
                 .padding(8)
                 .width(Length::Shrink)
                 .style(move |theme: &Theme| {
@@ -186,8 +200,41 @@ pub fn view<'a>(
                     }
                 });
 
+            let sender_avatar: Option<Element<Message>> = group_sender.as_ref().map(|sender| {
+                let sender_bare = sender.split('/').next().unwrap_or(sender);
+                match avatar_handles.get(sender_bare) {
+                    Some(handle) => iced::widget::image(handle.clone())
+                        .width(Length::Fixed(24.0))
+                        .height(Length::Fixed(24.0))
+                        .border_radius(12.0)
+                        .content_fit(iced::ContentFit::Cover)
+                        .into(),
+                    None => {
+                        let initial = sender
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string();
+                        container(text(initial).size(11))
+                            .width(Length::Fixed(24.0))
+                            .height(Length::Fixed(24.0))
+                            .align_x(Alignment::Center)
+                            .align_y(Alignment::Center)
+                            .style(|theme: &Theme| {
+                                container::background(theme.extended_palette().primary.strong.color)
+                            })
+                            .into()
+                    }
+                }
+            });
+
             let align = if is_outgoing {
                 row![Space::new().width(Length::Fill), bubble]
+            } else if let Some(avatar) = sender_avatar {
+                row![avatar, bubble, Space::new().width(Length::Fill)]
+                    .spacing(6)
+                    .align_y(Alignment::Start)
             } else {
                 row![bubble, Space::new().width(Length::Fill)]
             };

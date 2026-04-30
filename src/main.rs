@@ -55,9 +55,27 @@ fn init_tracing() {
 }
 
 fn main() -> iced::Result {
-    let debug_logging = std::env::args().any(|arg| arg == "--debug");
-    if debug_logging {
+    let args: Vec<String> = std::env::args().collect();
+    let verbose_logging = args.iter().any(|arg| arg == "--verbose");
+    let purge_history = args.iter().any(|arg| arg == "--purge");
+    if verbose_logging {
         init_tracing();
+    }
+    if purge_history {
+        if let Err(e) = crate::db::run_migrations() {
+            eprintln!("Failed to initialize database migrations: {}", e);
+            std::process::exit(1);
+        }
+        match crate::db::purge_history() {
+            Ok(count) => {
+                println!("Purged local message history: {} rows removed", count);
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("Failed to purge local message history: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
     crate::tray::init_tray();
 
