@@ -34,6 +34,9 @@ async-trait = "0.1"
 wa-rs-libsignal = "0.2.0"
 libsignal-protocol = { package = "libsignal-protocol-syft", version = "0.85.3-beta.5" }
 qrcodegen = "1.8"
+gtk-sys = "0.14.0"
+gobject-sys = "0.14.0"
+glib-sys = "0.14.0"
 
 [profile.release]
 opt-level = 3

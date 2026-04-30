@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use futures::FutureExt;
-use rand::Rng;
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use futures::stream::{Stream, StreamExt};
 use iced::stream;
+use rand::Rng;
 use tokio_xmpp::minidom::Element;
 use tokio_xmpp::{Client, Event as XmppEventRaw, Stanza};
 use xmpp_parsers::iq::Iq;
@@ -71,10 +71,7 @@ pub enum XmppEvent {
         _id: String,
     },
     StatusChanged(String),
-    BundleReceived {
-        jid: String,
-        device_id: u32,
-    },
+    BundleReceived,
     OmemoMessageReceived {
         from: String,
         body: String,
@@ -316,19 +313,23 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                         let _ = output
                             .send(XmppEvent::StatusChanged("Connecting...".to_string()))
                             .await;
-                        let _ = tokio_xmpp::rustls::crypto::ring::default_provider()
-                            .install_default();
+                        let _ =
+                            tokio_xmpp::rustls::crypto::ring::default_provider().install_default();
 
                         let connect_jid = match Jid::from_str(&jid) {
                             Ok(full) => full,
                             Err(_) => match BareJid::from_str(&jid) {
                                 Ok(bare) => {
-                                    let requested = format!("{}/{}", bare, random_dziber_resource());
+                                    let requested =
+                                        format!("{}/{}", bare, random_dziber_resource());
                                     match Jid::from_str(&requested) {
                                         Ok(j) => j,
                                         Err(e) => {
                                             let _ = output
-                                                .send(XmppEvent::ConnectionError(format!("Invalid JID: {}", e)))
+                                                .send(XmppEvent::ConnectionError(format!(
+                                                    "Invalid JID: {}",
+                                                    e
+                                                )))
                                                 .await;
                                             continue;
                                         }
@@ -336,7 +337,10 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 }
                                 Err(e) => {
                                     let _ = output
-                                        .send(XmppEvent::ConnectionError(format!("Invalid JID: {}", e)))
+                                        .send(XmppEvent::ConnectionError(format!(
+                                            "Invalid JID: {}",
+                                            e
+                                        )))
                                         .await;
                                     continue;
                                 }
@@ -595,10 +599,10 @@ async fn process_message(
     }
 
     // Sent carbon of an OMEMO message we couldn't decrypt (no self-session yet)
-    let has_omemo_payload = msg.payloads.iter().any(|p| {
-        p.name() == "encrypted"
-            && (p.ns() == NS_OMEMO_V0)
-    });
+    let has_omemo_payload = msg
+        .payloads
+        .iter()
+        .any(|p| p.name() == "encrypted" && (p.ns() == NS_OMEMO_V0));
     if !msg.bodies.contains_key("") && direction == Direction::Outgoing && has_omemo_payload {
         let placeholder = Message {
             id: msg
@@ -860,10 +864,7 @@ async fn handle_stanza(
                                                             }
                                                         }
                                                         let _ = output
-                                                            .send(XmppEvent::BundleReceived {
-                                                                jid: jid.clone(),
-                                                                device_id,
-                                                            })
+                                                            .send(XmppEvent::BundleReceived)
                                                             .await;
                                                         found_any = true;
                                                         found_device_ids.push(device_id);
@@ -1005,10 +1006,7 @@ async fn handle_stanza(
                                                             let _ = mgr.save();
                                                         }
                                                         let _ = output
-                                                            .send(XmppEvent::BundleReceived {
-                                                                jid: jid.clone(),
-                                                                device_id,
-                                                            })
+                                                            .send(XmppEvent::BundleReceived)
                                                             .await;
                                                     } else {
                                                         eprintln!(
@@ -1846,8 +1844,10 @@ async fn handle_stanza(
                                         if let Some(mgr) = omemo {
                                             let our_device_id = mgr.our_device_id();
                                             if let Ok(pubsub_jid) = Jid::from_str(&jid) {
-                                                let iq =
-                                                    build_device_list_iq(&[our_device_id], &pubsub_jid);
+                                                let iq = build_device_list_iq(
+                                                    &[our_device_id],
+                                                    &pubsub_jid,
+                                                );
                                                 eprintln!(
                                                     "[OMEMO] Publishing initial device list (v0) for {}: [{}]",
                                                     jid, our_device_id

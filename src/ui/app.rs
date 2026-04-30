@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
 use iced::widget::{Column, Space, button, image, row, text};
-use iced::{Alignment, Element, Length, Subscription, Task, Theme};
+use iced::{Alignment, Element, Length, Subscription, Task, Theme, exit, stream, window};
 
 use crate::models::account::{Account, ConnectionStatus};
 use crate::models::contact::Contact;
@@ -73,6 +73,12 @@ pub enum Message {
     SendMessageClicked,
     ToggleOmemo,
     ToggleOmemoQr,
+    WindowOpened(window::Id),
+    WindowCloseRequested(window::Id),
+    TrayShowRequested,
+    TrayQuitRequested,
+    ConfirmQuitDiscard,
+    ConfirmQuitCancel,
 
     // XMPP events
     XmppEvent(XmppEvent),
@@ -104,6 +110,9 @@ pub struct AppState {
     pub omemo_qr_uri: Option<String>,
     pub omemo_qr_handle: Option<iced::widget::image::Handle>,
     pub avatar_handles: HashMap<String, iced::widget::image::Handle>,
+    pub main_window_id: Option<window::Id>,
+    pub window_hidden_to_tray: bool,
+    pub show_unsaved_quit_confirm: bool,
 }
 
 impl Default for AppState {
@@ -125,6 +134,9 @@ impl Default for AppState {
             omemo_qr_uri: None,
             omemo_qr_handle: None,
             avatar_handles: HashMap::new(),
+            main_window_id: None,
+            window_hidden_to_tray: false,
+            show_unsaved_quit_confirm: false,
         };
 
         if let Ok(config) = load_config() {
@@ -142,6 +154,8 @@ pub fn boot() -> (AppState, Task<Message>) {
 }
 
 pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
+    let has_unsaved_changes = |state: &AppState| !state.draft.trim().is_empty();
+
     match message {
         Message::JidChanged(jid) => {
             state.jid_input = jid;
@@ -280,6 +294,40 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 state.omemo_qr_uri = Some(uri);
                 state.omemo_qr_handle = Some(iced::widget::image::Handle::from_rgba(w, h, rgba));
             }
+            Task::none()
+        }
+        Message::WindowOpened(id) => {
+            if state.main_window_id.is_none() {
+                state.main_window_id = Some(id);
+            }
+            Task::none()
+        }
+        Message::WindowCloseRequested(id) => {
+            state.main_window_id = Some(id);
+            state.window_hidden_to_tray = true;
+            window::set_mode(id, window::Mode::Hidden)
+        }
+        Message::TrayShowRequested => {
+            if let Some(id) = state.main_window_id {
+                state.window_hidden_to_tray = false;
+                return Task::batch([
+                    window::set_mode(id, window::Mode::Windowed),
+                    window::gain_focus(id),
+                ]);
+            }
+            Task::none()
+        }
+        Message::TrayQuitRequested => {
+            if has_unsaved_changes(state) {
+                state.show_unsaved_quit_confirm = true;
+                Task::none()
+            } else {
+                exit()
+            }
+        }
+        Message::ConfirmQuitDiscard => exit(),
+        Message::ConfirmQuitCancel => {
+            state.show_unsaved_quit_confirm = false;
             Task::none()
         }
         Message::XmppEvent(event) => match event {
@@ -489,11 +537,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 sort_conversations(state);
                 Task::none()
             }
-            XmppEvent::BundleReceived { jid, device_id, .. } => {
-                state.connection_status =
-                    format!("OMEMO session created for {} device {}", jid, device_id);
-                Task::none()
-            }
+            XmppEvent::BundleReceived => Task::none(),
             XmppEvent::AvatarReceived { jid, bytes } => {
                 eprintln!("[UI] AvatarReceived: jid={} bytes={}", jid, bytes.len());
                 save_cached_avatar(&jid, &bytes);
@@ -506,6 +550,26 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
 }
 
 pub fn view(state: &AppState) -> Element<'_, Message> {
+    if state.show_unsaved_quit_confirm {
+        return Column::new()
+            .padding(16)
+            .spacing(12)
+            .push(text("Unsaved draft detected"))
+            .push(text("Discard your current message draft and quit Dziber?").size(13))
+            .push(
+                row![
+                    button("Discard & Quit")
+                        .on_press(Message::ConfirmQuitDiscard)
+                        .padding(8),
+                    button("Cancel")
+                        .on_press(Message::ConfirmQuitCancel)
+                        .padding(8),
+                ]
+                .spacing(8),
+            )
+            .into();
+    }
+
     match state.screen {
         Screen::Login => login::view(
             &state.jid_input,
@@ -534,8 +598,12 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             })
             .on_press(Message::ToggleOmemo);
 
-            let qr_button = button(if state.show_omemo_qr { "Hide OMEMO QR" } else { "Show OMEMO QR" })
-                .on_press(Message::ToggleOmemoQr);
+            let qr_button = button(if state.show_omemo_qr {
+                "Hide OMEMO QR"
+            } else {
+                "Show OMEMO QR"
+            })
+            .on_press(Message::ToggleOmemoQr);
 
             let toolbar = row![
                 text("Dziber").size(14),
@@ -554,9 +622,16 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             let mut root = Column::new().push(toolbar);
 
             if state.show_omemo_qr {
-                let mut qr_col = Column::new().spacing(6).padding(8).push(text("Scan this in Conversations > Scan QR Code"));
+                let mut qr_col = Column::new()
+                    .spacing(6)
+                    .padding(8)
+                    .push(text("Scan this in Conversations > Scan QR Code"));
                 if let Some(handle) = &state.omemo_qr_handle {
-                    qr_col = qr_col.push(image(handle.clone()).width(Length::Fixed(320.0)).height(Length::Fixed(320.0)));
+                    qr_col = qr_col.push(
+                        image(handle.clone())
+                            .width(Length::Fixed(320.0))
+                            .height(Length::Fixed(320.0)),
+                    );
                 }
                 if let Some(uri) = &state.omemo_qr_uri {
                     qr_col = qr_col.push(text(uri).size(11));
@@ -564,8 +639,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
                 root = root.push(qr_col);
             }
 
-            root
-                .push(content)
+            root.push(content)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
@@ -574,7 +648,28 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 }
 
 pub fn subscription(_state: &AppState) -> Subscription<Message> {
-    Subscription::run(crate::xmpp::run_xmpp_worker).map(Message::XmppEvent)
+    let xmpp_sub = Subscription::run(crate::xmpp::run_xmpp_worker).map(Message::XmppEvent);
+    let close_sub = window::close_requests().map(Message::WindowCloseRequested);
+    let open_sub = window::open_events().map(Message::WindowOpened);
+    let tray_sub = Subscription::run(|| {
+        stream::channel(
+            64,
+            |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+            loop {
+                while let Some(event) = crate::tray::try_recv_event() {
+                    let msg = match event {
+                        crate::tray::TrayEvent::ShowRequested => Message::TrayShowRequested,
+                        crate::tray::TrayEvent::QuitRequested => Message::TrayQuitRequested,
+                    };
+                    let _ = output.send(msg).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        },
+        )
+    });
+
+    Subscription::batch([xmpp_sub, close_sub, open_sub, tray_sub])
 }
 
 pub fn theme(_state: &AppState) -> Theme {
