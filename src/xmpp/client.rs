@@ -179,21 +179,34 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let carbons_iq = build_carbons_enable_iq();
                                 let _ = safe_send_stanza(c, carbons_iq.into(), "worker-loop", &mut stream_healthy).await;
 
-                                // Fetch recent MAM history (XEP-0313)
+                                // Fetch recent MAM history (XEP-0313).
+                                // Send as IQ set with MAM form; many servers ignore iq/get or queries without FORM_TYPE.
                                 let mam_query = xmpp_parsers::mam::Query {
                                     queryid: Some(xmpp_parsers::mam::QueryId("mam-sync".to_string())),
                                     node: None,
-                                    form: None,
+                                    form: Some(xmpp_parsers::data_forms::DataForm {
+                                        type_: xmpp_parsers::data_forms::DataFormType::Submit,
+                                        title: None,
+                                        instructions: None,
+                                        fields: vec![
+                                            xmpp_parsers::data_forms::Field::new(
+                                                "FORM_TYPE",
+                                                xmpp_parsers::data_forms::FieldType::Hidden,
+                                            )
+                                            .with_value("urn:xmpp:mam:2"),
+                                        ],
+                                    }),
                                     set: Some(xmpp_parsers::rsm::SetQuery {
                                         max: Some(50),
                                         after: None,
-                                        before: None,
+                                        // Request the last page (most recent messages) on initial sync.
+                                        before: Some(String::new()),
                                         index: None,
                                     }),
                                     flip_page: false,
                                 };
-                                let mam_iq = Iq::from_get("mam-query", mam_query);
-                                tracing::info!("[MAM] Sending query: max=50");
+                                let mam_iq = Iq::from_set("mam-query", mam_query);
+                                tracing::info!("[MAM] Sending query: max=50 (mam:2)");
                                 let _ = safe_send_stanza(c, mam_iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             Some(XmppEventRaw::Stanza(stanza)) => {
@@ -642,7 +655,9 @@ async fn process_message(
             }
             // For sent carbons, use our JID for self-session lookup
             let session_jid = if direction == Direction::Outgoing {
-                our_jid.unwrap_or(&from_bare)
+                our_jid
+                    .map(|j| j.split('/').next().unwrap_or(j))
+                    .unwrap_or(&from_bare)
             } else {
                 &from_bare
             };
@@ -762,7 +777,8 @@ async fn handle_stanza(
                 );
 
                 if let Some(our) = our_jid {
-                    if archived_from.as_deref() == Some(our) {
+                    let our_bare = our.split('/').next().unwrap_or(our);
+                    if archived_from.as_deref() == Some(our_bare) {
                         // Outgoing message from archive
                         if let Some(to) = archived_msg.to.clone() {
                             tracing::info!("[MAM] treating as OUTGOING to {:?}", to);
