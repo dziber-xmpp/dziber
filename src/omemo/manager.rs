@@ -74,12 +74,12 @@ impl OmemoManager {
     fn ensure_account_material(account: &mut OmemoAccount) -> bool {
         let mut changed = false;
         if account.fallback_secret_key_bytes().is_none() {
-            eprintln!("[OMEMO] Missing fallback key in account; generating one");
+            tracing::info!("[OMEMO] Missing fallback key in account; generating one");
             account.inner.generate_fallback_key();
             changed = true;
         }
         if account.all_stored_one_time_keys().is_empty() {
-            eprintln!("[OMEMO] Missing one-time keys in account; generating 100");
+            tracing::info!("[OMEMO] Missing one-time keys in account; generating 100");
             account.inner.generate_one_time_keys(100);
             changed = true;
         }
@@ -125,7 +125,7 @@ impl OmemoManager {
                 // If OMEMO key material had to be regenerated, rotate device id as well.
                 // This avoids stale remote caches encrypting to old prekey ids for the same device.
                 let new_id = Self::generate_compatible_device_id();
-                eprintln!(
+                tracing::info!(
                     "[OMEMO] Key material regenerated; rotating device id {} -> {}",
                     account.device_id, new_id
                 );
@@ -133,7 +133,7 @@ impl OmemoManager {
                 let _ = crate::db::omemo::save_omemo_account(&account, &pickle_key);
             }
             if account.device_id == 0 || account.device_id > Self::MAX_COMPAT_DEVICE_ID {
-                eprintln!(
+                tracing::info!(
                     "[OMEMO] Incompatible device id {} detected; regenerating OMEMO state with compatible 31-bit device id",
                     account.device_id
                 );
@@ -287,7 +287,7 @@ impl OmemoManager {
                     self.signal_store = Some(session_store);
                 }
                 Err(e) => {
-                    eprintln!(
+                    tracing::info!(
                         "[OMEMO signal] process_prekey_bundle failed for {}:{}: {:?}",
                         jid, device_id, e
                     );
@@ -315,13 +315,13 @@ impl OmemoManager {
         devices.sort_unstable();
         devices.dedup();
         if devices.is_empty() {
-            eprintln!(
+            tracing::info!(
                 "[OMEMO encrypt] No known devices for {} (device list/sessions/bundle cache all empty)",
                 to
             );
             return None;
         }
-        eprintln!(
+        tracing::info!(
             "[OMEMO encrypt] to={} our_jid={} our_device={} devices={:?} use_v0={}",
             to, our_jid, our_device_id, devices, use_v0
         );
@@ -404,7 +404,7 @@ impl OmemoManager {
                         used_libsignal = true;
                     }
                     Err(e) => {
-                        eprintln!(
+                        tracing::info!(
                             "[OMEMO signal] message_encrypt failed for {}:{}: {:?}",
                             to, device_id, e
                         );
@@ -415,7 +415,7 @@ impl OmemoManager {
                 // Avoid emitting non-Conversations-compatible key slots when
                 // libsignal path is available but failed for this device.
                 if self.signal_store.is_some() {
-                    eprintln!(
+                    tracing::info!(
                         "[OMEMO encrypt] Skipping recipient {} device {} (no libsignal slot)",
                         to, device_id
                     );
@@ -424,7 +424,7 @@ impl OmemoManager {
                 let session = match self.sessions.get_mut(to).and_then(|m| m.get_mut(device_id)) {
                     Some(s) => s,
                     None => {
-                        eprintln!(
+                        tracing::info!(
                             "[OMEMO encrypt] No session for recipient {} device {}",
                             to, device_id
                         );
@@ -476,7 +476,7 @@ impl OmemoManager {
                             used_libsignal = true;
                         }
                         Err(e) => {
-                            eprintln!(
+                            tracing::info!(
                                 "[OMEMO signal] message_encrypt failed for own {}:{}: {:?}",
                                 our_jid, device_id, e
                             );
@@ -485,7 +485,7 @@ impl OmemoManager {
                 }
                 if !used_libsignal {
                     if self.signal_store.is_some() {
-                        eprintln!(
+                        tracing::info!(
                             "[OMEMO encrypt] Skipping own device {} (no libsignal slot)",
                             device_id
                         );
@@ -517,7 +517,7 @@ impl OmemoManager {
         }
 
         if key_groups.is_empty() {
-            eprintln!("[OMEMO encrypt] No key groups generated — returning None");
+            tracing::info!("[OMEMO encrypt] No key groups generated — returning None");
             return None;
         }
 
@@ -544,7 +544,7 @@ impl OmemoManager {
         let our_jid = self.our_jid.as_ref()?;
         let from_bare = from.split('/').next().unwrap_or(from);
         let from_addr = from.to_string();
-        eprintln!(
+        tracing::info!(
             "[OMEMO decrypt] from={} from_bare={} our_jid={} our_device={} sender_device={}",
             from, from_bare, our_jid, our_device_id, msg.header.sid
         );
@@ -557,7 +557,7 @@ impl OmemoManager {
         let mut ids_sorted = ids;
         ids_sorted.sort_unstable();
         let head = ids_sorted.iter().take(20).copied().collect::<Vec<_>>();
-        eprintln!(
+        tracing::info!(
             "[OMEMO decrypt] local prekeys count={} first20={:?}",
             ids_sorted.len(),
             head
@@ -573,7 +573,7 @@ impl OmemoManager {
         let key_group = match key_group {
             Some(g) => g,
             None => {
-                eprintln!(
+                tracing::info!(
                     "[OMEMO decrypt] No keys group for our JID {} (groups: {:?})",
                     our_jid,
                     msg.header.keys.iter().map(|g| &g.jid).collect::<Vec<_>>()
@@ -584,7 +584,7 @@ impl OmemoManager {
         let key_slot = match key_group.keys.iter().find(|k| k.rid == our_device_id) {
             Some(k) => k,
             None => {
-                eprintln!(
+                tracing::info!(
                     "[OMEMO decrypt] No key slot for our device {} (slots: {:?})",
                     our_device_id,
                     key_group.keys.iter().map(|k| k.rid).collect::<Vec<_>>()
@@ -592,8 +592,8 @@ impl OmemoManager {
                 return None;
             }
         };
-        eprintln!("[OMEMO decrypt] Found key slot: kex={}", key_slot.kex);
-        eprintln!(
+        tracing::info!("[OMEMO decrypt] Found key slot: kex={}", key_slot.kex);
+        tracing::info!(
             "[OMEMO decrypt raw] slot rid={} len={} data_hex={} iv_hex={}",
             key_slot.rid,
             key_slot.data.len(),
@@ -605,7 +605,7 @@ impl OmemoManager {
                 .unwrap_or_else(|| String::from("(none)")),
         );
         if let Some(payload) = &msg.payload {
-            eprintln!(
+            tracing::info!(
                 "[OMEMO decrypt raw] payload_len={} payload_hex={}",
                 payload.len(),
                 hex(payload),
@@ -1012,7 +1012,7 @@ impl OmemoManager {
                 *first &= 0x0f;
             }
 
-            eprintln!("[OMEMO rewrite] prekey_id={} one_time_key_len={} base_key_len={} identity_key_len={} inner_len={} inner_first8={}", prekey_id, one_time_key.len(), base_key.len(), identity_key.len(), inner_msg.len(), first_bytes_hex(&inner_msg, 8));
+            tracing::info!("[OMEMO rewrite] prekey_id={} one_time_key_len={} base_key_len={} identity_key_len={} inner_len={} inner_first8={}", prekey_id, one_time_key.len(), base_key.len(), identity_key.len(), inner_msg.len(), first_bytes_hex(&inner_msg, 8));
 
             // Re-encode using vodozemac expected shape:
             // 1: one_time_key bytes, 2: base_key bytes, 3: identity_key bytes, 4: message bytes
@@ -1041,26 +1041,26 @@ impl OmemoManager {
             if parsed.is_none()
                 && let Some(rewritten) = rewrite_signalish_normal_for_vodo(&normalized_key_data)
             {
-                eprintln!(
+                tracing::info!(
                     "[OMEMO rewrite] signal-normal rewritten len={} first16={}",
                     rewritten.len(),
                     first_bytes_hex(&rewritten, 16)
                 );
                 parsed = vodozemac::olm::Message::from_bytes(&rewritten).ok();
                 if parsed.is_none() {
-                    eprintln!("[OMEMO rewrite] rewritten candidate still failed vodo parse");
+                    tracing::info!("[OMEMO rewrite] rewritten candidate still failed vodo parse");
                 }
             } else if parsed.is_none() {
-                eprintln!("[OMEMO rewrite] signal-normal rewrite not applicable");
+                tracing::info!("[OMEMO rewrite] signal-normal rewrite not applicable");
                 if let Some(rewritten) = rewrite_signalish_normal_for_vodo_strict(&normalized_key_data) {
-                    eprintln!(
+                    tracing::info!(
                         "[OMEMO rewrite] strict signal-normal rewritten len={} first16={}",
                         rewritten.len(),
                         first_bytes_hex(&rewritten, 16)
                     );
                     parsed = vodozemac::olm::Message::from_bytes(&rewritten).ok();
                     if parsed.is_none() {
-                        eprintln!("[OMEMO rewrite] strict rewritten candidate still failed vodo parse");
+                        tracing::info!("[OMEMO rewrite] strict rewritten candidate still failed vodo parse");
                     }
                 }
             }
@@ -1072,7 +1072,7 @@ impl OmemoManager {
                     if normalized_key_data.len() > 1 {
                         match vodozemac::olm::Message::from_bytes(&normalized_key_data[1..]) {
                             Ok(m) => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO decrypt] Parsed OlmMessage after stripping 1-byte prefix"
                                 );
                                 Some(OlmMessage::Normal(m))
@@ -1083,13 +1083,13 @@ impl OmemoManager {
                                     .and_then(|s| vodozemac::olm::Message::from_base64(s).ok())
                                 {
                                     Some(m) => {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] Parsed OlmMessage from base64 text payload"
                                         );
                                         Some(OlmMessage::Normal(m))
                                     }
                                     None => {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] Failed to parse OlmMessage: {}; retry_without_prefix: {}; len={} first16={} normalized_first16={}",
                                             e1,
                                             e2,
@@ -1108,13 +1108,13 @@ impl OmemoManager {
                             .and_then(|s| vodozemac::olm::Message::from_base64(s).ok())
                         {
                             Some(m) => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO decrypt] Parsed OlmMessage from base64 text payload"
                                 );
                                 Some(OlmMessage::Normal(m))
                             }
                             None => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO decrypt] Failed to parse OlmMessage: {}; len={} first16={} normalized_first16={}",
                                     e1,
                                     key_slot.data.len(),
@@ -1170,7 +1170,7 @@ impl OmemoManager {
                             .map(|x| format!("{:02x}", x))
                             .collect::<String>()
                     };
-                    eprintln!(
+                    tracing::info!(
                         "[OMEMO prekey parsed] reg_id={} prekey_id={:?} signed_prekey_id={} base8={} ident8={} raw_first8={}",
                         reg_id,
                         req_pk,
@@ -1187,7 +1187,7 @@ impl OmemoManager {
                         let mut local_pre = sig_store_dbg.prekey_ids_sorted();
                         local_pre.sort_unstable();
                         let local_head = local_pre.iter().take(16).copied().collect::<Vec<_>>();
-                        eprintln!(
+                        tracing::info!(
                             "[OMEMO prekey local] signed_prekey_id={} prekey_count={} prekey_head={:?}",
                             sig_store_dbg.signed_prekey_id(),
                             local_pre.len(),
@@ -1210,7 +1210,7 @@ impl OmemoManager {
                         // invalidates established peer sessions and leads to persistent
                         // kex=false decrypt failures until all peers reset sessions.
                         self.stale_prekey_self_healed = true;
-                        eprintln!(
+                        tracing::info!(
                             "[OMEMO] Stale signed-prekey id={} (current={}, prev={}) detected; ignoring auto-rotate to preserve session continuity",
                             requested_spk_id, current_spk_id, prev_spk_id
                         );
@@ -1244,7 +1244,7 @@ impl OmemoManager {
                                 use_pq,
                             )) {
                                 Ok(pt) => {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO decrypt] libsignal prekey decrypt succeeded ({}, pq={}), len={}",
                                         label,
                                         pq_label,
@@ -1274,13 +1274,13 @@ impl OmemoManager {
                                 Err(e) => {
                                     let err_txt = format!("{:?}", e);
                                     if err_txt.contains("DuplicatedMessage") {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] duplicate prekey message ignored ({}, pq={})",
                                             label, pq_label
                                         );
                                         return None;
                                     }
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO decrypt] libsignal prekey decrypt failed ({}, pq={}): {:?}",
                                         label, pq_label, e
                                     );
@@ -1326,7 +1326,7 @@ impl OmemoManager {
                                 &mut csprng,
                             )) {
                                 Ok(pt) => {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO decrypt] libsignal normal fallback on kex=true succeeded ({}) len={}",
                                         label, pt.len()
                                     );
@@ -1352,7 +1352,7 @@ impl OmemoManager {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO decrypt] libsignal normal fallback on kex=true failed ({}): {:?}",
                                         label, e
                                     );
@@ -1449,9 +1449,9 @@ impl OmemoManager {
                 .ok();
             }
             if !parsed_any {
-                eprintln!("[OMEMO decrypt] vodo PreKeyMessage parse failed");
+                tracing::info!("[OMEMO decrypt] vodo PreKeyMessage parse failed");
             } else {
-                eprintln!(
+                tracing::info!(
                     "[OMEMO decrypt] vodo inbound prekey session failed for all candidates{}",
                     first_err
                         .as_ref()
@@ -1495,7 +1495,7 @@ impl OmemoManager {
                                 &mut csprng,
                             )) {
                                 Ok(pt) => {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO decrypt] libsignal normal decrypt succeeded ({}) len={}",
                                         label,
                                         pt.len()
@@ -1522,7 +1522,7 @@ impl OmemoManager {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO decrypt] libsignal normal decrypt failed ({}): {:?}",
                                         label, e
                                     );
@@ -1572,7 +1572,7 @@ impl OmemoManager {
                                     use_pq,
                                 )) {
                                     Ok(pt) => {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] libsignal prekey-recovery succeeded ({}, pq={}) len={}",
                                             label, pq_label, pt.len()
                                         );
@@ -1598,7 +1598,7 @@ impl OmemoManager {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] libsignal prekey-recovery failed ({}, pq={}): {:?}",
                                             label, pq_label, e
                                         );
@@ -1641,7 +1641,7 @@ impl OmemoManager {
                                     &mut csprng,
                                 )) {
                                     Ok(pt) => {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] libsignal normal decrypt succeeded ({}, remote=full) len={}",
                                             label, pt.len()
                                         );
@@ -1668,7 +1668,7 @@ impl OmemoManager {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO decrypt] libsignal normal decrypt failed ({}, remote=full): {:?}",
                                             label, e
                                         );
@@ -1691,12 +1691,12 @@ impl OmemoManager {
                 Some(session) => match session::decrypt(session, olm_msg.as_ref()?) {
                     Ok(pt) => pt,
                     Err(e) => {
-                        eprintln!("[OMEMO decrypt] Olm decrypt failed: {}", e);
+                        tracing::info!("[OMEMO decrypt] Olm decrypt failed: {}", e);
                         return None;
                     }
                 },
                 None => {
-                    eprintln!(
+                    tracing::info!(
                         "[OMEMO decrypt] No existing session for {} or {} device {} (sessions_full={:?} sessions_bare={:?})",
                         from_addr,
                         from_bare,
@@ -1716,7 +1716,7 @@ impl OmemoManager {
             if plaintext.len() == 32 {
                 let iv = msg.header.iv.as_ref()?;
                 if iv.len() != 12 {
-                    eprintln!("[OMEMO decrypt] v0-gcm iv wrong length: {}", iv.len());
+                    tracing::info!("[OMEMO decrypt] v0-gcm iv wrong length: {}", iv.len());
                     return None;
                 }
                 let key: [u8; 16] = plaintext[..16].try_into().ok()?;
@@ -1733,7 +1733,7 @@ impl OmemoManager {
                 return String::from_utf8(body).ok();
             }
 
-            eprintln!(
+            tracing::info!(
                 "[OMEMO decrypt] v0 plaintext wrong length: {}",
                 plaintext.len()
             );

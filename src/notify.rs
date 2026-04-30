@@ -19,7 +19,7 @@ pub fn incoming_message(from: &str, body: &str) {
     }
 
     if let Err(err) = ensure_inited() {
-        eprintln!("Notification init failed: {err}");
+        tracing::info!("Notification init failed: {err}");
         return;
     }
 
@@ -29,6 +29,6 @@ pub fn incoming_message(from: &str, body: &str) {
         Some("mail-message-new"),
     );
     if let Err(err) = n.show() {
-        eprintln!("Notification show failed: {err}");
+        tracing::info!("Notification show failed: {err}");
     }
 }

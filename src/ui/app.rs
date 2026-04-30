@@ -136,7 +136,7 @@ impl Default for AppState {
             omemo_qr_handle: None,
             avatar_handles: HashMap::new(),
             main_window_id: None,
-            window_hidden_to_tray: false,
+            window_hidden_to_tray: true,
             show_unsaved_quit_confirm: false,
         };
 
@@ -263,7 +263,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             let msg_id = msg.id.clone();
 
             if let Err(e) = crate::db::save_message(&msg, &account_jid, &to) {
-                eprintln!("Failed to save message: {}", e);
+                tracing::info!("Failed to save message: {}", e);
             }
 
             if let Some(conv) = state.conversations.get_mut(idx) {
@@ -346,7 +346,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             XmppEvent::Ready(sender) => {
                 state.xmpp_sender = Some(sender);
                 if let Err(e) = crate::db::run_migrations() {
-                    eprintln!("Database migration failed: {}", e);
+                    tracing::info!("Database migration failed: {}", e);
                 }
                 if let Some(account) = &state.account {
                     let jid = account.jid.clone();
@@ -380,7 +380,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 state.conversations.clear();
                 match crate::db::load_messages(&jid) {
                     Ok(msgs) => {
-                        eprintln!("[UI] Loaded {} messages from local DB", msgs.len());
+                        tracing::info!("[UI] Loaded {} messages from local DB", msgs.len());
                         let account_jid = jid.clone();
                         for (contact_jid, msg) in msgs {
                             if let Some(conv) = state
@@ -410,7 +410,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                         }
                         sort_conversations(state);
                     }
-                    Err(e) => eprintln!("[UI] Failed to load history: {}", e),
+                    Err(e) => tracing::info!("[UI] Failed to load history: {}", e),
                 }
 
                 Task::none()
@@ -447,7 +447,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             XmppEvent::RosterItem(contact) => {
                 let jid = contact.jid.clone();
                 let display_name = contact.display_name().to_string();
-                eprintln!("[UI] RosterItem: jid={} name={:?}", jid, display_name);
+                tracing::info!("[UI] RosterItem: jid={} name={:?}", jid, display_name);
                 state.contacts.insert(jid.clone(), contact);
                 if let Some(bytes) = load_cached_avatar(&jid) {
                     let handle = iced::widget::image::Handle::from_bytes(bytes);
@@ -476,6 +476,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             }
             XmppEvent::MessageReceived(msg) => {
                 let from_bare = msg.from.split('/').next().unwrap_or(&msg.from).to_string();
+                let is_incoming = msg.direction == Direction::Incoming;
                 let notify_body = msg.body.clone();
                 let account_jid = state
                     .account
@@ -484,7 +485,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     .unwrap_or_default();
 
                 if let Err(e) = crate::db::save_message(&msg, &account_jid, &from_bare) {
-                    eprintln!("Failed to save message: {}", e);
+                    tracing::info!("Failed to save message: {}", e);
                 }
 
                 let conv_idx = state
@@ -508,7 +509,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
 
                 sort_conversations(state);
-                if state.window_hidden_to_tray {
+                if is_incoming && state.window_hidden_to_tray {
                     crate::notify::incoming_message(&from_bare, &notify_body);
                 }
 
@@ -530,10 +531,11 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     .map(|a| a.jid.clone())
                     .unwrap_or_default();
                 let msg = ChatMessage::new(from.clone(), body, direction);
+                let is_incoming = msg.direction == Direction::Incoming;
                 let notify_body = msg.body.clone();
 
                 if let Err(e) = crate::db::save_message(&msg, &account_jid, &from) {
-                    eprintln!("Failed to save message: {}", e);
+                    tracing::info!("Failed to save message: {}", e);
                 }
 
                 let conv_idx = state
@@ -556,7 +558,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
 
                 sort_conversations(state);
-                if state.window_hidden_to_tray {
+                if is_incoming && state.window_hidden_to_tray {
                     crate::notify::incoming_message(&from, &notify_body);
                 }
                 if should_scroll_selected(state, &from) {
@@ -567,7 +569,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             }
             XmppEvent::BundleReceived => Task::none(),
             XmppEvent::AvatarReceived { jid, bytes } => {
-                eprintln!("[UI] AvatarReceived: jid={} bytes={}", jid, bytes.len());
+                tracing::info!("[UI] AvatarReceived: jid={} bytes={}", jid, bytes.len());
                 save_cached_avatar(&jid, &bytes);
                 let handle = iced::widget::image::Handle::from_bytes(bytes);
                 state.avatar_handles.insert(jid, handle);

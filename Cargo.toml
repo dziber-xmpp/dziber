@@ -38,6 +38,9 @@ gtk-sys = "0.14.0"
 gobject-sys = "0.14.0"
 glib-sys = "0.14.0"
 libnotify = "1.0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-appender = "0.2"
 
 [profile.release]
 opt-level = 3

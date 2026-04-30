@@ -81,7 +81,7 @@ mod gtk_tray {
         std::thread::spawn(move || {
             let ok: gboolean = unsafe { gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut()) };
             if ok == 0 {
-                eprintln!("Failed to init GTK tray");
+                tracing::info!("Failed to init GTK tray");
                 return;
             }
 
@@ -98,7 +98,7 @@ mod gtk_tray {
 
             let tray = unsafe { gtk_status_icon_new_from_icon_name(icon_name.as_ptr()) };
             if tray.is_null() {
-                eprintln!("Failed to create GTK status icon");
+                tracing::info!("Failed to create GTK status icon");
                 return;
             }
             unsafe {
@@ -108,7 +108,7 @@ mod gtk_tray {
 
             let menu = unsafe { gtk_menu_new() };
             if menu.is_null() {
-                eprintln!("Failed to create GTK tray menu");
+                tracing::info!("Failed to create GTK tray menu");
                 return;
             }
 

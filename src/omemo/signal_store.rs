@@ -41,8 +41,8 @@ impl SignalStore {
         account: &OmemoAccount,
         forced_signed_prekey_secret: Option<[u8; 32]>,
     ) -> Option<Self> {
-        let identity_secret = match account.identity_secret_key_bytes() { Some(v) => v, None => { eprintln!("[signal_store] missing identity_secret_key_bytes"); return None; } };
-        let identity_private = match Self::deserialize_private_tolerant(&identity_secret) { Some(v) => v, None => { eprintln!("[signal_store] identity private deserialize failed"); return None; } };
+        let identity_secret = match account.identity_secret_key_bytes() { Some(v) => v, None => { tracing::info!("[signal_store] missing identity_secret_key_bytes"); return None; } };
+        let identity_private = match Self::deserialize_private_tolerant(&identity_secret) { Some(v) => v, None => { tracing::info!("[signal_store] identity private deserialize failed"); return None; } };
         let identity = IdentityKeyPair::try_from(identity_private).ok()?;
 
         let (signed_prekey_id_u32, signed_prekey_secret) = if let Some(v) = forced_signed_prekey_secret {
@@ -58,14 +58,14 @@ impl SignalStore {
             let mut otk = account.all_stored_one_time_secret_keys();
             otk.sort_by_key(|(id, _)| *id);
             if let Some((id, sec)) = otk.iter().find(|(id, _)| *id == 1).copied().or_else(|| otk.first().copied()) {
-                eprintln!("[signal_store] fallback missing; using one-time prekey secret as signed-prekey substitute");
+                tracing::info!("[signal_store] fallback missing; using one-time prekey secret as signed-prekey substitute");
                 (id, sec)
             } else {
-                eprintln!("[signal_store] missing fallback and no one-time secret keys");
+                tracing::info!("[signal_store] missing fallback and no one-time secret keys");
                 return None;
             }
         };
-        let signed_prekey_private = match Self::deserialize_private_tolerant(&signed_prekey_secret) { Some(v) => v, None => { eprintln!("[signal_store] signed prekey deserialize failed"); return None; } };
+        let signed_prekey_private = match Self::deserialize_private_tolerant(&signed_prekey_secret) { Some(v) => v, None => { tracing::info!("[signal_store] signed prekey deserialize failed"); return None; } };
         let signed_prekey_public = signed_prekey_private.public_key().ok()?;
         let signed_prekey_keypair = KeyPair::new(signed_prekey_public, signed_prekey_private);
         let signed_prekey_sig = account.xeddsa_sign(&signed_prekey_keypair.public_key.serialize());
@@ -271,7 +271,7 @@ impl PreKeyStore for SignalStore {
             })
         {
             let fid: u32 = (*fallback_id).into();
-            eprintln!(
+            tracing::info!(
                 "[OMEMO signal] prekey id=0 requested; falling back to smallest local prekey id={}",
                 fid
             );
@@ -305,7 +305,7 @@ impl SignedPreKeyStore for SignalStore {
         }
         let req: u32 = signed_prekey_id.into();
         let have: u32 = guard.signed_prekey_id.into();
-        eprintln!(
+        tracing::info!(
             "[OMEMO signal] signed-prekey id not found requested={} local={} candidates={}; using local",
             req,
             have,
@@ -354,7 +354,7 @@ impl SessionStore for SignalStore {
             let k_name = &k[..kdot];
             let k_bare = k_name.split('/').next().unwrap_or(k_name);
             if k_bare == req_bare {
-                eprintln!(
+                tracing::info!(
                     "[OMEMO signal] load_session fallback hit req={} matched={}",
                     key, k
                 );

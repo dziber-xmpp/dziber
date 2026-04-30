@@ -116,7 +116,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 // Publish bundle to v0 and v0 (Conversations compat)
                                 let pubsub_jid: Jid = bound_jid.to_bare().into();
                                 let current_otk_count = mgr.account.all_stored_one_time_keys().len();
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Keeping existing one-time key set stable (count={})",
                                     current_otk_count
                                 );
@@ -128,10 +128,10 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                     if !bundle_id.is_empty() {
                                         pending_iqs.insert(bundle_id, PendingIq::BundlePublish { jid: pubsub_jid.to_string(), version: String::from("v0") });
                                     }
-                                    eprintln!("[OMEMO] Sending bundle publish (v0) for {}", pubsub_jid);
+                                    tracing::info!("[OMEMO] Sending bundle publish (v0) for {}", pubsub_jid);
                                 let _ = safe_send_stanza(c, bundle_iq.into(), "worker-loop", &mut stream_healthy).await;
                                 } else {
-                                    eprintln!("[OMEMO] Bundle publish (v0) skipped: no fallback key");
+                                    tracing::info!("[OMEMO] Bundle publish (v0) skipped: no fallback key");
                                 }
                                 if let Some(bundle_iq_v0) = build_bundle_iq_v0(&mgr, &pubsub_jid) {
                                     let bundle_id = match &bundle_iq_v0 {
@@ -141,10 +141,10 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                     if !bundle_id.is_empty() {
                                         pending_iqs.insert(bundle_id, PendingIq::BundlePublish { jid: pubsub_jid.to_string(), version: String::from("v0") });
                                     }
-                                    eprintln!("[OMEMO] Sending bundle publish (v0) for {}", pubsub_jid);
+                                    tracing::info!("[OMEMO] Sending bundle publish (v0) for {}", pubsub_jid);
                                     let _ = safe_send_stanza(c, bundle_iq_v0.into(), "worker-loop", &mut stream_healthy).await;
                                 } else {
-                                    eprintln!("[OMEMO] Bundle publish (v0) skipped: no fallback key");
+                                    tracing::info!("[OMEMO] Bundle publish (v0) skipped: no fallback key");
                                 }
                                 let _ = mgr.save();
                                 omemo = Some(mgr);
@@ -167,7 +167,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
 
                                 // Request roster
                                 let roster_iq = Iq::from_get("roster-get", Roster { ver: None, items: vec![] });
-                                eprintln!("[ROSTER] Sending roster request");
+                                tracing::info!("[ROSTER] Sending roster request");
                                 let _ = safe_send_stanza(c, roster_iq.into(), "worker-loop", &mut stream_healthy).await;
 
                                 // Enable Message Carbons (XEP-0280)
@@ -188,7 +188,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                     flip_page: false,
                                 };
                                 let mam_iq = Iq::from_get("mam-query", mam_query);
-                                eprintln!("[MAM] Sending query: max=50");
+                                tracing::info!("[MAM] Sending query: max=50");
                                 let _ = safe_send_stanza(c, mam_iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             Some(XmppEventRaw::Stanza(stanza)) => {
@@ -225,14 +225,14 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 {
                                     match mgr.encrypt_message(&to, &body) {
                                         Some(encrypted) => {
-                                            eprintln!("[SEND] OMEMO encrypt ok for {}", to);
+                                            tracing::info!("[SEND] OMEMO encrypt ok for {}", to);
                                             let msg = build_message_stanza(
                                                 &to,
                                                 &encrypted,
                                                 &uuid::Uuid::new_v4().to_string(),
                                             );
                                             if let Some(xml) = xmpp_message_to_xml(&msg) {
-                                                eprintln!("[SEND XML] {}", xml);
+                                                tracing::info!("[SEND XML] {}", xml);
                                             }
                                             let _ = safe_send_stanza(
                                                 c,
@@ -241,7 +241,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                                 &mut stream_healthy,
                                             )
                                             .await;
-                                            eprintln!("[SEND] OMEMO stanza dispatched to {}", to);
+                                            tracing::info!("[SEND] OMEMO stanza dispatched to {}", to);
                                             let _ = output
                                                 .send(XmppEvent::MessageSent {
                                                     _id: uuid::Uuid::new_v4().to_string(),
@@ -250,12 +250,12 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                             continue;
                                         }
                                         None => {
-                                            eprintln!("[SEND] OMEMO encrypt failed for {}", to);
+                                            tracing::info!("[SEND] OMEMO encrypt failed for {}", to);
                                         }
                                     }
                                 }
                                 let msg = make_message(&to, &body);
-                                eprintln!("[SEND] Plaintext stanza dispatched to {}", to);
+                                tracing::info!("[SEND] Plaintext stanza dispatched to {}", to);
                                 let _ = safe_send_stanza(c, msg.into(), "worker-loop", &mut stream_healthy).await;
                                 let _ = output.send(XmppEvent::MessageSent { _id: uuid::Uuid::new_v4().to_string() }).await;
                             }
@@ -273,7 +273,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = output.send(XmppEvent::Disconnected).await;
                             }
                             Some(XmppCommand::FetchDeviceList { jid }) => {
-                                eprintln!("[OMEMO] FetchDeviceList command received for {}", jid);
+                                tracing::info!("[OMEMO] FetchDeviceList command received for {}", jid);
                                 let iq = build_device_list_fetch_iq(&jid, OmemoVersion::V0);
                                 let id = match &iq {
                                     Iq::Get { id, .. } | Iq::Set { id, .. } => id.clone(),
@@ -282,11 +282,11 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 if !id.is_empty() {
                                     pending_iqs.insert(id, PendingIq::DeviceList { jid: jid.clone(), version: OmemoVersion::V0, accumulated: None });
                                 }
-                                eprintln!("[OMEMO] Sending device list fetch IQ (v0) to {}", jid);
+                                tracing::info!("[OMEMO] Sending device list fetch IQ (v0) to {}", jid);
                                 let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             Some(XmppCommand::FetchAvatar { jid }) => {
-                                eprintln!("[AVATAR] FetchAvatar command received for {}", jid);
+                                tracing::info!("[AVATAR] FetchAvatar command received for {}", jid);
                                 let iq = build_vcard_fetch_iq(&jid);
                                 let id = match &iq {
                                     Iq::Get { id, .. } | Iq::Set { id, .. } => id.clone(),
@@ -295,7 +295,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 if !id.is_empty() {
                                     pending_iqs.insert(id, PendingIq::VCardAvatar { jid: jid.clone() });
                                 }
-                                eprintln!("[AVATAR] Sending vCard IQ to {}", jid);
+                                tracing::info!("[AVATAR] Sending vCard IQ to {}", jid);
                                 let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             None => {
@@ -375,12 +375,12 @@ async fn safe_send_stanza(
         Ok(Ok(_)) => true,
         Ok(Err(err)) => {
             *stream_healthy = false;
-            eprintln!("[XMPP] send_stanza failed in {}: {}", context, err);
+            tracing::info!("[XMPP] send_stanza failed in {}: {}", context, err);
             false
         }
         Err(_) => {
             *stream_healthy = false;
-            eprintln!(
+            tracing::info!(
                 "[XMPP] send_stanza panicked in {} (stream closed/background worker crashed)",
                 context
             );
@@ -546,7 +546,7 @@ async fn process_message(
             && let Some(encrypted) = parse_encrypted_message(payload)
             && let Some(mgr) = omemo
         {
-            eprintln!(
+            tracing::info!(
                 "[OMEMO raw] from={} ns={} sid={} groups={} payload_len={} iv_len={:?}",
                 from_bare,
                 payload.ns(),
@@ -556,9 +556,9 @@ async fn process_message(
                 encrypted.header.iv.as_ref().map(|v| v.len()),
             );
             for g in &encrypted.header.keys {
-                eprintln!("[OMEMO raw] group_jid={} key_count={}", g.jid, g.keys.len());
+                tracing::info!("[OMEMO raw] group_jid={} key_count={}", g.jid, g.keys.len());
                 for k in &g.keys {
-                    eprintln!(
+                    tracing::info!(
                         "[OMEMO raw] key rid={} kex={} data_len={} data_hex={}",
                         k.rid,
                         k.kex,
@@ -568,10 +568,10 @@ async fn process_message(
                 }
             }
             if let Some(iv) = &encrypted.header.iv {
-                eprintln!("[OMEMO raw] iv_hex={}", hex(iv));
+                tracing::info!("[OMEMO raw] iv_hex={}", hex(iv));
             }
             if let Some(payload_bytes) = &encrypted.payload {
-                eprintln!("[OMEMO raw] payload_hex={}", hex(payload_bytes));
+                tracing::info!("[OMEMO raw] payload_hex={}", hex(payload_bytes));
             }
             // For sent carbons, use our JID for self-session lookup
             let session_jid = if direction == Direction::Outgoing {
@@ -651,30 +651,30 @@ async fn handle_stanza(
     match stanza {
         Stanza::Message(mut msg) => {
             if msg.type_ == MessageType::Error {
-                eprintln!(
+                tracing::info!(
                     "[MSG ERROR] from={:?} to={:?} id={:?} payloads={}",
                     msg.from,
                     msg.to,
                     msg.id,
                     msg.payloads.len()
                 );
-                eprintln!("[MSG ERROR RAW] {:?}", msg);
+                tracing::info!("[MSG ERROR RAW] {:?}", msg);
                 if let Some(xml) = xmpp_message_to_xml(&msg) {
-                    eprintln!("[MSG ERROR XML] {}", xml);
+                    tracing::info!("[MSG ERROR XML] {}", xml);
                 }
                 return;
             }
 
-            eprintln!(
+            tracing::info!(
                 "[MSG] from={:?} to={:?} type={:?} payloads={}",
                 msg.from,
                 msg.to,
                 msg.type_,
                 msg.payloads.len()
             );
-            eprintln!("[MSG RAW] {:?}", msg);
+            tracing::info!("[MSG RAW] {:?}", msg);
             if let Some(xml) = xmpp_message_to_xml(&msg) {
-                eprintln!("[MSG XML] {}", xml);
+                tracing::info!("[MSG XML] {}", xml);
             }
 
             // Check for MAM archive results (XEP-0313)
@@ -686,7 +686,7 @@ async fn handle_stanza(
                     .map(|d| d.stamp.0.with_timezone(&Utc));
                 let archived_from = archived_msg.from.as_ref().map(|j| j.to_bare().to_string());
                 let archived_to = archived_msg.to.as_ref().map(|j| j.to_bare().to_string());
-                eprintln!(
+                tracing::info!(
                     "[MAM] result id={} archived_from={:?} archived_to={:?} our_jid={:?}",
                     mam_result.id, archived_from, archived_to, our_jid
                 );
@@ -695,7 +695,7 @@ async fn handle_stanza(
                     if archived_from.as_deref() == Some(our) {
                         // Outgoing message from archive
                         if let Some(to) = archived_msg.to.clone() {
-                            eprintln!("[MAM] treating as OUTGOING to {:?}", to);
+                            tracing::info!("[MAM] treating as OUTGOING to {:?}", to);
                             process_message(
                                 archived_msg,
                                 output,
@@ -710,7 +710,7 @@ async fn handle_stanza(
                     } else {
                         // Incoming message from archive
                         if let Some(from) = archived_msg.from.clone() {
-                            eprintln!("[MAM] treating as INCOMING from {:?}", from);
+                            tracing::info!("[MAM] treating as INCOMING from {:?}", from);
                             process_message(
                                 archived_msg,
                                 output,
@@ -742,7 +742,7 @@ async fn handle_stanza(
 
             // Check for carbon copies (XEP-0280)
             if let Some((carbon_type, fwd_msg)) = extract_carbon_message(&msg) {
-                eprintln!(
+                tracing::info!(
                     "[CARBON] type={:?} fwd_from={:?} fwd_to={:?}",
                     carbon_type, fwd_msg.from, fwd_msg.to
                 );
@@ -780,7 +780,7 @@ async fn handle_stanza(
             }
 
             if let Some(from) = msg.from.clone() {
-                eprintln!(
+                tracing::info!(
                     "[LIVE] message from={:?} body={:?}",
                     from,
                     msg.bodies.get("")
@@ -825,14 +825,14 @@ async fn handle_stanza(
                                 let mut found_any = false;
                                 let mut found_other = false;
                                 let mut found_device_ids = Vec::new();
-                                eprintln!("[OMEMO] Bundle result for {} ({:?})", jid, version);
+                                tracing::info!("[OMEMO] Bundle result for {} ({:?})", jid, version);
                                 if let Some(element) = payload {
-                                    eprintln!("[OMEMO] Bundle result payload: {:?}", element);
+                                    tracing::info!("[OMEMO] Bundle result payload: {:?}", element);
                                     if let Ok(pubsub) =
                                         xmpp_parsers::pubsub::PubSub::try_from(element.clone())
                                     {
                                         if let xmpp_parsers::pubsub::PubSub::Items(items) = pubsub {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Bundle result for {} ({:?}): {} items",
                                                 jid,
                                                 version,
@@ -846,7 +846,7 @@ async fn handle_stanza(
                                                     .unwrap_or(0);
                                                 if let Some(ref payload) = item.payload {
                                                     if let Some(bundle) = parse_bundle(payload) {
-                                                        eprintln!(
+                                                        tracing::info!(
                                                             "[OMEMO] Parsed bundle for {} device {} (prekeys={})",
                                                             jid,
                                                             device_id,
@@ -869,32 +869,32 @@ async fn handle_stanza(
                                                         found_any = true;
                                                         found_device_ids.push(device_id);
                                                     } else {
-                                                        eprintln!(
+                                                        tracing::info!(
                                                             "[OMEMO] Failed to parse bundle for {} device {}",
                                                             jid, device_id
                                                         );
                                                     }
                                                 } else {
-                                                    eprintln!(
+                                                    tracing::info!(
                                                         "[OMEMO] Bundle item for {} device {} has no payload",
                                                         jid, device_id
                                                     );
                                                 }
                                             }
                                         } else {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Bundle result for {} ({:?}) is not Items",
                                                 jid, version
                                             );
                                         }
                                     } else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Bundle result for {} ({:?}) failed to parse as PubSub",
                                             jid, version
                                         );
                                     }
                                 } else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Bundle result for {} ({:?}) has no payload",
                                         jid, version
                                     );
@@ -926,7 +926,7 @@ async fn handle_stanza(
                                                 _ => String::new(),
                                             };
                                             if !id.is_empty() {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Sending v0 bundle fetch for {} device {}",
                                                     jid, device_id
                                                 );
@@ -948,24 +948,24 @@ async fn handle_stanza(
                                         }
                                     }
                                     if !found_any {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] No v0 bundles found for {}, trying v0 per-device",
                                             jid
                                         );
                                     } else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Bundle v0 fetch complete for {}: found_any={} found_other={}",
                                             jid, found_any, found_other
                                         );
                                     }
                                 } else {
                                     if !found_any {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] No bundles found for {} in any version",
                                             jid
                                         );
                                     } else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Bundle fetch complete for {}: found_any={} found_other={}",
                                             jid, found_any, found_other
                                         );
@@ -973,7 +973,7 @@ async fn handle_stanza(
                                 }
                             }
                             PendingIq::BundleDevice { jid, device_id } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Bundle result for {} device {} (v0)",
                                     jid, device_id
                                 );
@@ -985,7 +985,7 @@ async fn handle_stanza(
                                             if let Some(item) = items.items.first() {
                                                 if let Some(ref payload) = item.payload {
                                                     if let Some(bundle) = parse_bundle(payload) {
-                                                        eprintln!(
+                                                        tracing::info!(
                                                             "[OMEMO] Parsed bundle for {} device {} (prekeys={})",
                                                             jid,
                                                             device_id,
@@ -1009,37 +1009,37 @@ async fn handle_stanza(
                                                             .send(XmppEvent::BundleReceived)
                                                             .await;
                                                     } else {
-                                                        eprintln!(
+                                                        tracing::info!(
                                                             "[OMEMO] Failed to parse bundle for {} device {}",
                                                             jid, device_id
                                                         );
                                                     }
                                                 } else {
-                                                    eprintln!(
+                                                    tracing::info!(
                                                         "[OMEMO] Bundle item for {} device {} has no payload",
                                                         jid, device_id
                                                     );
                                                 }
                                             } else {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] No items in v0 bundle response for {} device {}",
                                                     jid, device_id
                                                 );
                                             }
                                         } else {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Bundle result for {} device {} is not Items",
                                                 jid, device_id
                                             );
                                         }
                                     } else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Bundle result for {} device {} failed to parse as PubSub",
                                             jid, device_id
                                         );
                                     }
                                 } else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Bundle result for {} device {} has no payload",
                                         jid, device_id
                                     );
@@ -1050,7 +1050,7 @@ async fn handle_stanza(
                                 version,
                                 accumulated,
                             } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] DeviceList response for {} ({:?})",
                                     jid, version
                                 );
@@ -1062,7 +1062,7 @@ async fn handle_stanza(
                                     && let xmpp_parsers::pubsub::PubSub::Items(items) = pubsub
                                 {
                                     item_count = items.items.len();
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Got {} pubsub items for {}",
                                         item_count, jid
                                     );
@@ -1077,13 +1077,13 @@ async fn handle_stanza(
                                         {
                                             let ids: Vec<u32> =
                                                 device_list.devices.iter().map(|d| d.id).collect();
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Device list item id={} for {}: {:?}",
                                                 item_id, jid, ids
                                             );
                                             devices.extend(ids);
                                         } else {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Device list item id={} for {} has no parseable payload",
                                                 item_id, jid
                                             );
@@ -1093,7 +1093,7 @@ async fn handle_stanza(
                                 let is_own_jid = accumulated.is_some();
                                 let mut all_devices = accumulated.unwrap_or_default();
                                 if !devices.is_empty() {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Parsed device list for {} ({:?}): {:?}",
                                         jid, version, devices
                                     );
@@ -1105,7 +1105,7 @@ async fn handle_stanza(
                                 if is_own_jid {
                                     // For own JID: always exhaust all versions and merge
                                     if let Some(next_version) = version.next() {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Fetching next version {:?} for own device list {}",
                                             next_version, jid
                                         );
@@ -1134,12 +1134,12 @@ async fn handle_stanza(
                                     } else {
                                         // All versions exhausted — publish merged list and fetch bundles
                                         if !all_devices.is_empty() {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Merged own device list for {}: {:?}",
                                                 jid, all_devices
                                             );
                                         } else {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] No own device list found for {} in any version",
                                                 jid
                                             );
@@ -1154,7 +1154,7 @@ async fn handle_stanza(
                                             if let Ok(pubsub_jid) = Jid::from_str(&jid) {
                                                 let merged_iq =
                                                     build_device_list_iq(&all_devices, &pubsub_jid);
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Publishing merged device list (v0) for {}: {:?}",
                                                     jid, all_devices
                                                 );
@@ -1182,7 +1182,7 @@ async fn handle_stanza(
                                                 .await;
                                                 // If v0 has stale items, purge before publishing
                                                 if version == OmemoVersion::V0 && item_count > 1 {
-                                                    eprintln!(
+                                                    tracing::info!(
                                                         "[OMEMO] v0 device list for {} has {} items, purging before publish",
                                                         jid, item_count
                                                     );
@@ -1215,7 +1215,7 @@ async fn handle_stanza(
                                                         &all_devices,
                                                         &pubsub_jid,
                                                     );
-                                                    eprintln!(
+                                                    tracing::info!(
                                                         "[OMEMO] Publishing merged device list (v0) for {}: {:?}",
                                                         jid, all_devices
                                                     );
@@ -1251,7 +1251,7 @@ async fn handle_stanza(
                                                 }
                                                 _ => String::new(),
                                             };
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Sending bundle fetch (auto) for {} (v0, id={})",
                                                 jid, bundle_id
                                             );
@@ -1272,7 +1272,7 @@ async fn handle_stanza(
                                             )
                                             .await
                                             {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Bundle fetch send FAILED for {}",
                                                     jid
                                                 );
@@ -1282,7 +1282,7 @@ async fn handle_stanza(
                                 } else {
                                     // For other JIDs: current behavior — first non-empty wins
                                     if !all_devices.is_empty() {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Parsed device list for {}: {:?}",
                                             jid, all_devices
                                         );
@@ -1295,7 +1295,7 @@ async fn handle_stanza(
                                                 }
                                                 _ => String::new(),
                                             };
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[OMEMO] Sending bundle fetch (contact) for {} (v0, id={})",
                                                 jid, bundle_id
                                             );
@@ -1316,14 +1316,14 @@ async fn handle_stanza(
                                             )
                                             .await
                                             {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Bundle fetch send FAILED for {}",
                                                     jid
                                                 );
                                             }
                                         }
                                     } else if let Some(next_version) = version.next() {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] No device list for {} with {:?}, trying {:?}",
                                             jid, version, next_version
                                         );
@@ -1342,7 +1342,7 @@ async fn handle_stanza(
                                                 },
                                             );
                                         }
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Sending device list fetch IQ ({:?}) to {}",
                                             next_version, jid
                                         );
@@ -1354,7 +1354,7 @@ async fn handle_stanza(
                                         )
                                         .await;
                                     } else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] No device list found for {} in any version",
                                             jid
                                         );
@@ -1362,11 +1362,11 @@ async fn handle_stanza(
                                 }
                             }
                             PendingIq::VCardAvatar { jid } => {
-                                eprintln!("[AVATAR] vCard response for {}", jid);
+                                tracing::info!("[AVATAR] vCard response for {}", jid);
                                 if let Some(element) = payload {
                                     if let Ok(vcard) = VCard::try_from(element.clone()) {
                                         if let Some(photo) = vcard.photo {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[AVATAR] vCard photo found for {} type={}",
                                                 jid, photo.type_.data
                                             );
@@ -1378,19 +1378,19 @@ async fn handle_stanza(
                                                 .await;
                                             return;
                                         } else {
-                                            eprintln!(
+                                            tracing::info!(
                                                 "[AVATAR] vCard has no photo for {}, falling back to PEP",
                                                 jid
                                             );
                                         }
                                     } else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[AVATAR] vCard parse failed for {}, falling back to PEP",
                                             jid
                                         );
                                     }
                                 } else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[AVATAR] vCard response has no payload for {}, falling back to PEP",
                                         jid
                                     );
@@ -1415,9 +1415,9 @@ async fn handle_stanza(
                                 .await;
                             }
                             PendingIq::AvatarMetadata { jid } => {
-                                eprintln!("[AVATAR] Metadata response for {}", jid);
+                                tracing::info!("[AVATAR] Metadata response for {}", jid);
                                 let Some(element) = payload else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[AVATAR] Metadata response has no payload for {}",
                                         jid
                                     );
@@ -1426,24 +1426,24 @@ async fn handle_stanza(
                                 let Ok(pubsub) =
                                     xmpp_parsers::pubsub::PubSub::try_from(element.clone())
                                 else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[AVATAR] Metadata response is not pubsub for {}",
                                         jid
                                     );
                                     return;
                                 };
                                 let xmpp_parsers::pubsub::PubSub::Items(items) = pubsub else {
-                                    eprintln!("[AVATAR] Metadata pubsub is not Items for {}", jid);
+                                    tracing::info!("[AVATAR] Metadata pubsub is not Items for {}", jid);
                                     return;
                                 };
-                                eprintln!(
+                                tracing::info!(
                                     "[AVATAR] Metadata has {} items for {}",
                                     items.items.len(),
                                     jid
                                 );
                                 for item in items.items {
                                     let Some(payload_el) = item.payload else {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[AVATAR] Metadata item has no payload for {}",
                                             jid
                                         );
@@ -1452,7 +1452,7 @@ async fn handle_stanza(
                                     if payload_el.name() != "metadata"
                                         || payload_el.ns() != "urn:xmpp:avatar:metadata"
                                     {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[AVATAR] Metadata item has wrong payload: name={} ns={} for {}",
                                             payload_el.name(),
                                             payload_el.ns(),
@@ -1464,7 +1464,7 @@ async fn handle_stanza(
                                     for info in payload_el.children() {
                                         if info.name() == "info" {
                                             if let Some(hash) = info.attr("id") {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[AVATAR] Found avatar hash={} for {}, fetching data...",
                                                     hash, jid
                                                 );
@@ -1491,7 +1491,7 @@ async fn handle_stanza(
                                                 found = true;
                                                 break;
                                             } else {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[AVATAR] info element has no id attr for {}",
                                                     jid
                                                 );
@@ -1499,7 +1499,7 @@ async fn handle_stanza(
                                         }
                                     }
                                     if !found {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[AVATAR] No info elements found in metadata for {}",
                                             jid
                                         );
@@ -1507,35 +1507,35 @@ async fn handle_stanza(
                                 }
                             }
                             PendingIq::AvatarData { jid } => {
-                                eprintln!("[AVATAR] Data response for {}", jid);
+                                tracing::info!("[AVATAR] Data response for {}", jid);
                                 let Some(element) = payload else {
-                                    eprintln!("[AVATAR] Data response has no payload for {}", jid);
+                                    tracing::info!("[AVATAR] Data response has no payload for {}", jid);
                                     return;
                                 };
                                 let Ok(pubsub) =
                                     xmpp_parsers::pubsub::PubSub::try_from(element.clone())
                                 else {
-                                    eprintln!("[AVATAR] Data response is not pubsub for {}", jid);
+                                    tracing::info!("[AVATAR] Data response is not pubsub for {}", jid);
                                     return;
                                 };
                                 let xmpp_parsers::pubsub::PubSub::Items(items) = pubsub else {
-                                    eprintln!("[AVATAR] Data pubsub is not Items for {}", jid);
+                                    tracing::info!("[AVATAR] Data pubsub is not Items for {}", jid);
                                     return;
                                 };
-                                eprintln!(
+                                tracing::info!(
                                     "[AVATAR] Data has {} items for {}",
                                     items.items.len(),
                                     jid
                                 );
                                 for item in items.items {
                                     let Some(payload_el) = item.payload else {
-                                        eprintln!("[AVATAR] Data item has no payload for {}", jid);
+                                        tracing::info!("[AVATAR] Data item has no payload for {}", jid);
                                         continue;
                                     };
                                     if payload_el.name() != "data"
                                         || payload_el.ns() != "urn:xmpp:avatar:data"
                                     {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[AVATAR] Data item has wrong payload: name={} ns={} for {}",
                                             payload_el.name(),
                                             payload_el.ns(),
@@ -1546,13 +1546,13 @@ async fn handle_stanza(
                                     use base64::Engine;
                                     use base64::engine::general_purpose::STANDARD as BASE64;
                                     let text = payload_el.text();
-                                    eprintln!(
+                                    tracing::info!(
                                         "[AVATAR] Data text length={} for {}",
                                         text.len(),
                                         jid
                                     );
                                     if let Ok(bytes) = BASE64.decode(&text) {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[AVATAR] Decoded {} bytes for {}",
                                             bytes.len(),
                                             jid
@@ -1564,17 +1564,17 @@ async fn handle_stanza(
                                             })
                                             .await;
                                     } else {
-                                        eprintln!("[AVATAR] Failed to decode base64 for {}", jid);
+                                        tracing::info!("[AVATAR] Failed to decode base64 for {}", jid);
                                     }
                                 }
                             }
                             PendingIq::DeviceListPublish { jid, version } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Device list publish ({}) succeeded for {}",
                                     version, jid
                                 );
                                 if version.starts_with("v0") {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Re-fetching v0 device list to verify node state for {}",
                                         jid
                                     );
@@ -1603,18 +1603,18 @@ async fn handle_stanza(
                                 }
                             }
                             PendingIq::BundlePublish { jid, version } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Bundle publish ({}) succeeded for {}",
                                     version, jid
                                 );
                                 if let Some(mgr) = omemo.as_mut() {
                                     mgr.account.inner.mark_keys_as_published();
                                     let _ = mgr.save();
-                                    eprintln!("[OMEMO] Marked one-time keys as published");
+                                    tracing::info!("[OMEMO] Marked one-time keys as published");
                                 }
                             }
                             PendingIq::PurgeV0DeviceList { jid, devices } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] v0 device list node purged for {}, publishing fresh list: {:?}",
                                     jid, devices
                                 );
@@ -1648,7 +1648,7 @@ async fn handle_stanza(
                                 devices,
                                 version,
                             } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Node configuration pushed for {} ({}), retrying publish",
                                     jid, node
                                 );
@@ -1686,7 +1686,7 @@ async fn handle_stanza(
 
                     if let Some(element) = payload {
                         if let Ok(fin) = xmpp_parsers::mam::Fin::try_from(element.clone()) {
-                            eprintln!(
+                            tracing::info!(
                                 "[MAM] Fin complete={} first={:?} last={:?} count={:?}",
                                 fin.complete,
                                 fin.set.first.as_ref().map(|f| &f.item),
@@ -1703,17 +1703,17 @@ async fn handle_stanza(
                             return;
                         }
 
-                        eprintln!(
+                        tracing::info!(
                             "[ROSTER] IQ result element: name={} ns={}",
                             element.name(),
                             element.ns()
                         );
                         if element.name() == "query" && element.ns() == xmpp_parsers::ns::ROSTER {
-                            eprintln!("[ROSTER] Parsing roster query response");
+                            tracing::info!("[ROSTER] Parsing roster query response");
                             if let Ok(roster) = Roster::try_from(element.clone()) {
-                                eprintln!("[ROSTER] Got {} items", roster.items.len());
+                                tracing::info!("[ROSTER] Got {} items", roster.items.len());
                                 for item in roster.items {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[ROSTER] Item: jid={} name={:?}",
                                         item.jid, item.name
                                     );
@@ -1747,15 +1747,15 @@ async fn handle_stanza(
                     }
                 }
                 Iq::Set { payload, .. } => {
-                    eprintln!(
+                    tracing::info!(
                         "[ROSTER] IQ set element: name={} ns={}",
                         payload.name(),
                         payload.ns()
                     );
                     if payload.name() == "query" && payload.ns() == xmpp_parsers::ns::ROSTER {
-                        eprintln!("[ROSTER] Parsing roster push");
+                        tracing::info!("[ROSTER] Parsing roster push");
                         if let Ok(roster) = Roster::try_from(payload.clone()) {
-                            eprintln!("[ROSTER] Push got {} items", roster.items.len());
+                            tracing::info!("[ROSTER] Push got {} items", roster.items.len());
                             for item in roster.items {
                                 let subscription = match item.subscription {
                                     xmpp_parsers::roster::Subscription::None => Subscription::None,
@@ -1780,12 +1780,12 @@ async fn handle_stanza(
                     }
                 }
                 Iq::Error { id, error, .. } => {
-                    eprintln!("[IQ] Error id={} error={:?}", id, error);
+                    tracing::info!("[IQ] Error id={} error={:?}", id, error);
                     if let Some(pending) = pending_iqs.remove(&id) {
-                        eprintln!("[IQ] Pending IQ {} failed", id);
+                        tracing::info!("[IQ] Pending IQ {} failed", id);
                         match pending {
                             PendingIq::VCardAvatar { jid } => {
-                                eprintln!("[AVATAR] vCard error for {}, falling back to PEP", jid);
+                                tracing::info!("[AVATAR] vCard error for {}, falling back to PEP", jid);
                                 let iq = build_avatar_metadata_fetch_iq(&jid);
                                 let meta_id = match &iq {
                                     Iq::Get { id, .. } | Iq::Set { id, .. } => id.clone(),
@@ -1808,7 +1808,7 @@ async fn handle_stanza(
                                 accumulated,
                             } if error.defined_condition == DefinedCondition::ItemNotFound => {
                                 if let Some(next_version) = version.next() {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] DeviceList not found for {} with {:?}, trying {:?}",
                                         jid, version, next_version
                                     );
@@ -1835,7 +1835,7 @@ async fn handle_stanza(
                                     )
                                     .await;
                                 } else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] DeviceList not found for {} in any version",
                                         jid
                                     );
@@ -1848,7 +1848,7 @@ async fn handle_stanza(
                                                     &[our_device_id],
                                                     &pubsub_jid,
                                                 );
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Publishing initial device list (v0) for {}: [{}]",
                                                     jid, our_device_id
                                                 );
@@ -1878,7 +1878,7 @@ async fn handle_stanza(
                                                     &[our_device_id],
                                                     &pubsub_jid,
                                                 );
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Publishing initial device list (v0) for {}: [{}]",
                                                     jid, our_device_id
                                                 );
@@ -1911,7 +1911,7 @@ async fn handle_stanza(
                             }
                             PendingIq::Bundle { jid, version } => {
                                 if version == OmemoVersion::V0 {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Bundle fetch error for {} (v0): {:?}, trying v0 per-device",
                                         jid, error.defined_condition
                                     );
@@ -1930,7 +1930,7 @@ async fn handle_stanza(
                                                 _ => String::new(),
                                             };
                                             if !id.is_empty() {
-                                                eprintln!(
+                                                tracing::info!(
                                                     "[OMEMO] Sending v0 bundle fetch for {} device {}",
                                                     jid, device_id
                                                 );
@@ -1952,20 +1952,20 @@ async fn handle_stanza(
                                         }
                                     }
                                 } else {
-                                    eprintln!(
+                                    tracing::info!(
                                         "[OMEMO] Bundles not found for {} in any version (last error: {:?})",
                                         jid, error.defined_condition
                                     );
                                 }
                             }
                             PendingIq::BundleDevice { jid, device_id } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Bundle fetch error for {} device {} (v0): {:?}",
                                     jid, device_id, error.defined_condition
                                 );
                             }
                             PendingIq::DeviceListPublish { jid, version } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Device list publish ({}) FAILED for {}: {:?}",
                                     version, jid, error
                                 );
@@ -1978,7 +1978,7 @@ async fn handle_stanza(
                                     if is_precondition
                                         || error.defined_condition == DefinedCondition::Conflict
                                     {
-                                        eprintln!(
+                                        tracing::info!(
                                             "[OMEMO] Pushing node config for {} device list ({}), then retrying",
                                             jid, version
                                         );
@@ -2022,13 +2022,13 @@ async fn handle_stanza(
                                 }
                             }
                             PendingIq::BundlePublish { jid, version } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Bundle publish ({}) FAILED for {}: {:?}",
                                     version, jid, error
                                 );
                             }
                             PendingIq::PurgeV0DeviceList { jid, devices } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] v0 device list purge FAILED for {}: {:?}, publishing anyway",
                                     jid, error.defined_condition
                                 );
@@ -2062,7 +2062,7 @@ async fn handle_stanza(
                                 devices,
                                 version,
                             } => {
-                                eprintln!(
+                                tracing::info!(
                                     "[OMEMO] Node configuration push failed for {} ({}): {:?}, retrying publish anyway",
                                     jid, node, error.defined_condition
                                 );
