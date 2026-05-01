@@ -1866,6 +1866,23 @@ async fn handle_stanza(
                                             presence: Presence::default(),
                                         };
                                         let _ = output.send(XmppEvent::RosterItem(contact)).await;
+                                        if let Some(join_presence) =
+                                            build_muc_join_presence(jid, &default_muc_nick(our_jid))
+                                        {
+                                            tracing::info!("[MUC] Joining room {}", jid);
+                                            let _ = safe_send_stanza(
+                                                client,
+                                                join_presence.into(),
+                                                "stanza-handler",
+                                                stream_healthy,
+                                            )
+                                            .await;
+                                        } else {
+                                            tracing::info!(
+                                                "[MUC] Failed to build join presence for room {}",
+                                                jid
+                                            );
+                                        }
                                         if let Ok(room_jid) = Jid::from_str(jid) {
                                             let queryid =
                                                 format!("mam-room-{}", jid.replace('@', "_"));
@@ -2543,13 +2560,43 @@ fn make_presence() -> XmppPresence {
 fn make_message(to: &str, body: &str) -> XmppMessage {
     let to_jid = Jid::from_str(to).unwrap_or_else(|_| Jid::from_str("invalid@localhost").unwrap());
     let mut message = XmppMessage::new(Some(to_jid));
-    message.type_ = MessageType::Chat;
+    if looks_like_room_jid(to) {
+        message.type_ = MessageType::Groupchat;
+    } else {
+        message.type_ = MessageType::Chat;
+    }
     message.bodies.insert(Lang::default(), body.to_owned());
     message
 }
 
 fn make_file_message(to: &str, filename: &str, url: &str) -> XmppMessage {
     make_message(to, &format!("📎 {}\n{}", filename, url))
+}
+
+fn looks_like_room_jid(jid: &str) -> bool {
+    let bare = jid.split('/').next().unwrap_or(jid);
+    bare.contains("@conference.") || bare.contains("@muc.")
+}
+
+fn default_muc_nick(our_jid: Option<&str>) -> String {
+    let bare = our_jid
+        .unwrap_or("dziber")
+        .split('/')
+        .next()
+        .unwrap_or("dziber");
+    bare.split('@').next().unwrap_or("dziber").to_string()
+}
+
+fn build_muc_join_presence(room_jid: &str, nick: &str) -> Option<XmppPresence> {
+    let room = room_jid.split('/').next().unwrap_or(room_jid);
+    let full = format!("{}/{}", room, nick);
+    let to_jid = Jid::from_str(&full).ok()?;
+
+    let mut presence = XmppPresence::new(PresenceType::None);
+    presence.to = Some(to_jid);
+    let muc_x = Element::builder("x", "http://jabber.org/protocol/muc").build();
+    presence.payloads.push(muc_x);
+    Some(presence)
 }
 
 fn guess_content_type(path: &Path) -> String {
