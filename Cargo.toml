@@ -7,7 +7,7 @@ edition = "2024"
 iced = { version = "0.14.0", features = ["tokio", "image"] }
 tokio-xmpp = { version = "5.0.0", default-features = false, features = ["starttls", "ring", "rustls-native-certs"] }
 xmpp-parsers = "0.22.0"
-tokio = { version = "1.44", features = ["sync"] }
+tokio = { version = "1.44", features = ["sync", "net", "rt", "time"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "6.0"
@@ -43,6 +43,7 @@ tracing-subscriber = "0.3"
 tracing-appender = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 rfd = "0.15"
+maolan-engine = "0.1"
 
 [profile.release]
 opt-level = 3

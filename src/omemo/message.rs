@@ -137,6 +137,9 @@ pub fn build_message_stanza(to: &str, msg: &EncryptedMessage, id: &str) -> XmppM
         "I sent you an OMEMO encrypted message but your client doesn’t seem to support that. Find more information on https://conversations.im/omemo".to_string(),
     );
     message.payloads.push(encrypted_el);
+    message
+        .payloads
+        .push(Element::builder("request", "urn:xmpp:receipts").build());
 
     let markable_el = Element::builder("markable", "urn:xmpp:chat-markers:0").build();
     message.payloads.push(markable_el);

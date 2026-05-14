@@ -1,3 +1,5 @@
 pub mod client;
 
-pub use client::{XmppCommand, XmppEvent, run_xmpp_worker};
+pub use client::{
+    CallRejectReason, ChatState, IceCandidate, XmppCommand, XmppEvent, run_xmpp_worker,
+};

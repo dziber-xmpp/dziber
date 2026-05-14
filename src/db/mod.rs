@@ -6,7 +6,7 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 
 use crate::db::models::DbMessage;
 use crate::db::schema::messages;
-use crate::models::message::Message;
+use crate::models::message::{Message, MessageStatus};
 
 pub mod models;
 pub mod omemo;
@@ -71,4 +71,37 @@ pub fn purge_history() -> Result<usize, Box<dyn std::error::Error>> {
     let mut conn = establish_connection();
     let deleted = diesel::delete(messages::table).execute(&mut conn)?;
     Ok(deleted)
+}
+
+pub fn update_message_status(
+    message_id: &str,
+    status_value: MessageStatus,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::db::schema::messages::dsl::*;
+
+    let mut conn = establish_connection();
+    let status_str = match status_value {
+        MessageStatus::Pending => "pending",
+        MessageStatus::Sent => "sent",
+        MessageStatus::Delivered => "delivered",
+        MessageStatus::Received => "received",
+        MessageStatus::Error => "error",
+    };
+    diesel::update(messages.filter(id.eq(message_id)))
+        .set(status.eq(status_str))
+        .execute(&mut conn)?;
+    Ok(())
+}
+
+pub fn update_message_body(
+    message_id: &str,
+    body_value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::db::schema::messages::dsl::*;
+
+    let mut conn = establish_connection();
+    diesel::update(messages.filter(id.eq(message_id)))
+        .set(body.eq(body_value))
+        .execute(&mut conn)?;
+    Ok(())
 }

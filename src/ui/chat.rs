@@ -45,6 +45,7 @@ pub fn view<'a>(
     draft: &'a str,
     chat_message_bodies: &'a HashMap<String, text_editor::Content>,
     avatar_handles: &'a HashMap<String, iced::widget::image::Handle>,
+    active_call_with: Option<&str>,
 ) -> Element<'a, Message> {
     let Some(conv) = conversation else {
         return container(
@@ -59,10 +60,18 @@ pub fn view<'a>(
         .into();
     };
 
+    let in_call = active_call_with.is_some_and(|jid| jid == conv.contact_jid);
+    let call_button = if in_call {
+        button("Hang Up").on_press(Message::EndCallClicked).padding(8)
+    } else {
+        button("Call").on_press(Message::StartCallClicked).padding(8)
+    };
+
     let header = container(
         row![
             text(conv.display_name()).size(16),
             Space::new().width(Length::Fill),
+            call_button,
         ]
         .align_y(Alignment::Center),
     )

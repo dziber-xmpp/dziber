@@ -33,6 +33,32 @@ use vodozemac::{Curve25519PublicKey, Curve25519SecretKey};
 
 const NS_CARBONS: &str = "urn:xmpp:carbons:2";
 const NS_FORWARD: &str = "urn:xmpp:forward:0";
+const NS_RECEIPTS: &str = "urn:xmpp:receipts";
+const NS_PING: &str = "urn:xmpp:ping";
+const NS_CHATSTATES: &str = "http://jabber.org/protocol/chatstates";
+const NS_MESSAGE_CORRECT: &str = "urn:xmpp:message-correct:0";
+const NS_JINGLE: &str = "urn:xmpp:jingle:1";
+const NS_JINGLE_RTP: &str = "urn:xmpp:jingle:apps:rtp:1";
+const NS_JINGLE_ICE: &str = "urn:xmpp:jingle:transports:ice-udp:1";
+const NS_JINGLE_RTP_INFO: &str = "urn:xmpp:jingle:apps:rtp:info:1";
+const NS_JINGLE_DTLS: &str = "urn:xmpp:jingle:apps:dtls:0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatState {
+    Active,
+    Composing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IceCandidate {
+    pub foundation: String,
+    pub component: u32,
+    pub protocol: String,
+    pub priority: u64,
+    pub ip: String,
+    pub port: u16,
+    pub typ: String,
+}
 
 #[derive(Debug, Clone)]
 pub enum XmppCommand {
@@ -42,9 +68,49 @@ pub enum XmppCommand {
     },
     Disconnect,
     SendMessage {
+        id: String,
         to: String,
         body: String,
         omemo: bool,
+    },
+    SendMessageCorrection {
+        id: String,
+        to: String,
+        replace_id: String,
+        body: String,
+    },
+    SendChatState {
+        to: String,
+        state: ChatState,
+    },
+    InitiateCall {
+        to: String,
+    },
+    AcceptCall {
+        with: String,
+        sid: String,
+    },
+    RejectCall {
+        with: String,
+        sid: String,
+        reason: CallRejectReason,
+    },
+    EndCall {
+        with: String,
+        sid: String,
+    },
+    SendTransportInfo {
+        with: String,
+        sid: String,
+        candidates: Vec<IceCandidate>,
+    },
+    SendTransportInfoEnd {
+        with: String,
+        sid: String,
+    },
+    SendCallRinging {
+        with: String,
+        sid: String,
     },
     SendFile {
         to: String,
@@ -75,6 +141,36 @@ pub enum XmppEvent {
     MessageSent {
         _id: String,
     },
+    MessageDelivered {
+        id: String,
+    },
+    MessageCorrected {
+        from: String,
+        target_id: String,
+        body: String,
+    },
+    IncomingCall {
+        from: String,
+        sid: String,
+    },
+    CallAccepted {
+        with: String,
+        sid: String,
+    },
+    CallRinging {
+        with: String,
+        sid: String,
+    },
+    CallTransportInfo {
+        with: String,
+        sid: String,
+        candidates: Vec<IceCandidate>,
+    },
+    CallEnded {
+        with: String,
+        sid: String,
+        reason: String,
+    },
     StatusChanged(String),
     BundleReceived,
     OmemoMessageReceived {
@@ -88,6 +184,26 @@ pub enum XmppEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallRejectReason {
+    Decline,
+    Busy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JingleSessionState {
+    PendingOutgoing,
+    PendingIncoming,
+    Active,
+    Terminating,
+}
+
+#[derive(Debug, Clone)]
+struct JingleSession {
+    peer_bare: String,
+    state: JingleSessionState,
+}
+
 pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
     stream::channel(100, async |mut output: mpsc::Sender<XmppEvent>| {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<XmppCommand>(100);
@@ -98,6 +214,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
         let mut pending_iqs: HashMap<String, PendingIq> = HashMap::new();
         let mut our_jid: Option<String> = None;
         let mut stream_healthy = true;
+        let mut jingle_sessions: HashMap<String, JingleSession> = HashMap::new();
 
         loop {
             if let Some(ref mut c) = client {
@@ -207,7 +324,16 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = safe_send_stanza(c, mam_iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             Some(XmppEventRaw::Stanza(stanza)) => {
-                                handle_stanza(stanza, c, &mut output, &mut omemo, &mut pending_iqs, our_jid.as_deref(), &mut stream_healthy).await;
+                                handle_stanza(
+                                    stanza,
+                                    c,
+                                    &mut output,
+                                    &mut omemo,
+                                    &mut pending_iqs,
+                                    &mut jingle_sessions,
+                                    our_jid.as_deref(),
+                                    &mut stream_healthy,
+                                ).await;
                             }
                             Some(XmppEventRaw::Disconnected(err)) => {
                                 stream_healthy = false;
@@ -218,6 +344,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = output.send(XmppEvent::Disconnected).await;
                                 client = None;
                                 omemo = None;
+                                jingle_sessions.clear();
                             }
                             None => {
                                 stream_healthy = false;
@@ -227,6 +354,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = output.send(XmppEvent::Disconnected).await;
                                 client = None;
                                 omemo = None;
+                                jingle_sessions.clear();
                             }
                         }
                     }
@@ -234,7 +362,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                     cmd = cmd_rx.next() => {
                         match cmd {
                             Some(XmppCommand::Connect { .. }) => {}
-                            Some(XmppCommand::SendMessage { to, body, omemo: use_omemo }) => {
+                            Some(XmppCommand::SendMessage { id, to, body, omemo: use_omemo }) => {
                                 if let Some(ref mut mgr) = omemo
                                     && use_omemo
                                 {
@@ -244,7 +372,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                             let msg = build_message_stanza(
                                                 &to,
                                                 &encrypted,
-                                                &uuid::Uuid::new_v4().to_string(),
+                                                &id,
                                             );
                                             if let Some(xml) = xmpp_message_to_xml(&msg) {
                                                 tracing::info!("[SEND XML] {}", xml);
@@ -259,7 +387,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                             tracing::info!("[SEND] OMEMO stanza dispatched to {}", to);
                                             let _ = output
                                                 .send(XmppEvent::MessageSent {
-                                                    _id: uuid::Uuid::new_v4().to_string(),
+                                                    _id: id,
                                                 })
                                                 .await;
                                             continue;
@@ -269,10 +397,195 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                         }
                                     }
                                 }
-                                let msg = make_message(&to, &body);
+                                let msg = make_message(&to, &body, &id);
                                 tracing::info!("[SEND] Plaintext stanza dispatched to {}", to);
                                 let _ = safe_send_stanza(c, msg.into(), "worker-loop", &mut stream_healthy).await;
-                                let _ = output.send(XmppEvent::MessageSent { _id: uuid::Uuid::new_v4().to_string() }).await;
+                                let _ = output.send(XmppEvent::MessageSent { _id: id }).await;
+                            }
+                            Some(XmppCommand::SendMessageCorrection {
+                                id,
+                                to,
+                                replace_id,
+                                body,
+                            }) => {
+                                let msg = make_correction_message(&to, &body, &id, &replace_id);
+                                let _ = safe_send_stanza(
+                                    c,
+                                    msg.into(),
+                                    "worker-loop",
+                                    &mut stream_healthy,
+                                )
+                                .await;
+                                let _ = output.send(XmppEvent::MessageSent { _id: id }).await;
+                            }
+                            Some(XmppCommand::SendChatState { to, state }) => {
+                                let msg = make_chatstate_message(&to, state);
+                                let _ = safe_send_stanza(
+                                    c,
+                                    msg.into(),
+                                    "worker-loop",
+                                    &mut stream_healthy,
+                                )
+                                .await;
+                            }
+                            Some(XmppCommand::InitiateCall { to }) => {
+                                let sid = uuid::Uuid::new_v4().to_string();
+                                let bare = to.split('/').next().unwrap_or(&to).to_string();
+                                jingle_sessions.insert(
+                                    sid.clone(),
+                                    JingleSession {
+                                        peer_bare: bare,
+                                        state: JingleSessionState::PendingOutgoing,
+                                    },
+                                );
+                                let iq = build_jingle_session_initiate_iq(&to, &sid, our_jid.as_deref());
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
+                                let _ = output.send(XmppEvent::StatusChanged(format!("Calling {to}..."))).await;
+                            }
+                            Some(XmppCommand::AcceptCall { with, sid }) => {
+                                let with_bare = with.split('/').next().unwrap_or(&with).to_string();
+                                match jingle_sessions.get_mut(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == with_bare
+                                            && sess.state == JingleSessionState::PendingIncoming =>
+                                    {
+                                        sess.state = JingleSessionState::Active;
+                                    }
+                                    _ => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!(
+                                            "Ignoring AcceptCall: unknown or invalid session sid={}",
+                                            sid
+                                        ))).await;
+                                        continue;
+                                    }
+                                }
+                                let iq = build_jingle_session_accept_iq(&with, &sid, our_jid.as_deref());
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
+                                let _ = output.send(XmppEvent::CallAccepted { with, sid }).await;
+                            }
+                            Some(XmppCommand::RejectCall { with, sid, reason }) => {
+                                let with_bare = with.split('/').next().unwrap_or(&with).to_string();
+                                if let Some(sess) = jingle_sessions.get(&sid)
+                                    && sess.peer_bare != with_bare
+                                {
+                                    let _ = output.send(XmppEvent::StatusChanged(format!(
+                                        "Ignoring RejectCall: SID peer mismatch sid={}",
+                                        sid
+                                    ))).await;
+                                    continue;
+                                }
+                                if let Some(sess) = jingle_sessions.get_mut(&sid) {
+                                    sess.state = JingleSessionState::Terminating;
+                                }
+                                let iq = build_jingle_session_reject_iq(&with, &sid, our_jid.as_deref(), reason);
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
+                                jingle_sessions.remove(&sid);
+                                let _ = output.send(XmppEvent::CallEnded {
+                                    with,
+                                    sid,
+                                    reason: String::from("local-reject"),
+                                }).await;
+                            }
+                            Some(XmppCommand::EndCall { with, sid }) => {
+                                let with_bare = with.split('/').next().unwrap_or(&with).to_string();
+                                match jingle_sessions.get_mut(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == with_bare
+                                            && matches!(
+                                                sess.state,
+                                                JingleSessionState::Active
+                                                    | JingleSessionState::PendingOutgoing
+                                                    | JingleSessionState::PendingIncoming
+                                            ) =>
+                                    {
+                                        sess.state = JingleSessionState::Terminating;
+                                    }
+                                    _ => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!(
+                                            "Ignoring EndCall: unknown or invalid session sid={}",
+                                            sid
+                                        ))).await;
+                                        continue;
+                                    }
+                                }
+                                let iq = build_jingle_session_terminate_iq(&with, &sid, our_jid.as_deref());
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
+                                jingle_sessions.remove(&sid);
+                                let _ = output.send(XmppEvent::CallEnded {
+                                    with,
+                                    sid,
+                                    reason: String::from("success"),
+                                }).await;
+                            }
+                            Some(XmppCommand::SendTransportInfo {
+                                with,
+                                sid,
+                                candidates,
+                            }) => {
+                                let with_bare = with.split('/').next().unwrap_or(&with).to_string();
+                                match jingle_sessions.get(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == with_bare
+                                            && matches!(
+                                                sess.state,
+                                                JingleSessionState::Active
+                                                    | JingleSessionState::PendingOutgoing
+                                                    | JingleSessionState::PendingIncoming
+                                            ) => {}
+                                    _ => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!(
+                                            "Ignoring transport-info: unknown or invalid session sid={}",
+                                            sid
+                                        ))).await;
+                                        continue;
+                                    }
+                                }
+                                let iq = build_jingle_transport_info_iq(
+                                    &with,
+                                    &sid,
+                                    our_jid.as_deref(),
+                                    &candidates,
+                                );
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
+                            }
+                            Some(XmppCommand::SendTransportInfoEnd { with, sid }) => {
+                                let with_bare = with.split('/').next().unwrap_or(&with).to_string();
+                                match jingle_sessions.get(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == with_bare
+                                            && matches!(
+                                                sess.state,
+                                                JingleSessionState::Active
+                                                    | JingleSessionState::PendingOutgoing
+                                                    | JingleSessionState::PendingIncoming
+                                            ) => {}
+                                    _ => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!(
+                                            "Ignoring end-of-candidates: unknown or invalid session sid={}",
+                                            sid
+                                        ))).await;
+                                        continue;
+                                    }
+                                }
+                                let iq = build_jingle_transport_info_end_iq(&with, &sid, our_jid.as_deref());
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
+                            }
+                            Some(XmppCommand::SendCallRinging { with, sid }) => {
+                                let with_bare = with.split('/').next().unwrap_or(&with).to_string();
+                                match jingle_sessions.get(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == with_bare
+                                            && sess.state == JingleSessionState::PendingIncoming => {}
+                                    _ => {
+                                        let _ = output.send(XmppEvent::StatusChanged(format!(
+                                            "Ignoring ringing: unknown or invalid session sid={}",
+                                            sid
+                                        ))).await;
+                                        continue;
+                                    }
+                                }
+                                let iq = build_jingle_session_info_ringing_iq(&with, &sid, our_jid.as_deref());
+                                let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             Some(XmppCommand::SendFile { to, path }) => {
                                 let file_path = PathBuf::from(path.clone());
@@ -374,7 +687,16 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
             } else {
                 match cmd_rx.next().await {
                     Some(XmppCommand::SendMessage { .. }) => {}
+                    Some(XmppCommand::SendMessageCorrection { .. }) => {}
+                    Some(XmppCommand::SendChatState { .. }) => {}
                     Some(XmppCommand::SendFile { .. }) => {}
+                    Some(XmppCommand::InitiateCall { .. }) => {}
+                    Some(XmppCommand::AcceptCall { .. }) => {}
+                    Some(XmppCommand::RejectCall { .. }) => {}
+                    Some(XmppCommand::EndCall { .. }) => {}
+                    Some(XmppCommand::SendTransportInfo { .. }) => {}
+                    Some(XmppCommand::SendTransportInfoEnd { .. }) => {}
+                    Some(XmppCommand::SendCallRinging { .. }) => {}
                     Some(XmppCommand::FetchDeviceList { .. }) => {}
                     Some(XmppCommand::FetchAvatar { .. }) => {}
                     Some(XmppCommand::Connect { jid, password }) => {
@@ -611,6 +933,341 @@ fn build_bookmarks_fetch_iq() -> Iq {
     }
 }
 
+fn build_jingle_session_initiate_iq(to: &str, sid: &str, our_jid: Option<&str>) -> Iq {
+    let initiator = our_jid.unwrap_or_default().to_string();
+    let content = Element::builder("content", NS_JINGLE)
+        .attr("creator".try_into().expect("valid attr"), "initiator")
+        .attr("name".try_into().expect("valid attr"), "audio")
+        .append(
+            Element::builder("description", NS_JINGLE_RTP)
+                .attr("media".try_into().expect("valid attr"), "audio")
+                .append(
+                    Element::builder("payload-type", NS_JINGLE_RTP)
+                        .attr("id".try_into().expect("valid attr"), "111")
+                        .attr("name".try_into().expect("valid attr"), "opus")
+                        .attr("clockrate".try_into().expect("valid attr"), "48000")
+                        .attr("channels".try_into().expect("valid attr"), "2")
+                        .build(),
+                )
+                .build(),
+        )
+        .append(
+            Element::builder("transport", NS_JINGLE_ICE).append(
+                Element::builder("fingerprint", NS_JINGLE_DTLS)
+                    .attr("hash".try_into().expect("valid attr"), "sha-256")
+                    .attr("setup".try_into().expect("valid attr"), "actpass")
+                    .append("00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00")
+                    .build(),
+            ),
+        )
+        .build();
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr(
+            "action".try_into().expect("valid attr"),
+            "session-initiate",
+        )
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr("initiator".try_into().expect("valid attr"), initiator)
+        .append(content)
+        .build();
+    Iq::Set {
+        id: format!("jingle-init-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn build_jingle_session_accept_iq(to: &str, sid: &str, our_jid: Option<&str>) -> Iq {
+    let responder = our_jid.unwrap_or_default().to_string();
+    let content = Element::builder("content", NS_JINGLE)
+        .attr("creator".try_into().expect("valid attr"), "initiator")
+        .attr("name".try_into().expect("valid attr"), "audio")
+        .append(
+            Element::builder("description", NS_JINGLE_RTP)
+                .attr("media".try_into().expect("valid attr"), "audio")
+                .append(
+                    Element::builder("payload-type", NS_JINGLE_RTP)
+                        .attr("id".try_into().expect("valid attr"), "111")
+                        .attr("name".try_into().expect("valid attr"), "opus")
+                        .attr("clockrate".try_into().expect("valid attr"), "48000")
+                        .attr("channels".try_into().expect("valid attr"), "2")
+                        .build(),
+                )
+                .build(),
+        )
+        .append(
+            Element::builder("transport", NS_JINGLE_ICE).append(
+                Element::builder("fingerprint", NS_JINGLE_DTLS)
+                    .attr("hash".try_into().expect("valid attr"), "sha-256")
+                    .attr("setup".try_into().expect("valid attr"), "active")
+                    .append("00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00")
+                    .build(),
+            ),
+        )
+        .build();
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr("action".try_into().expect("valid attr"), "session-accept")
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr("responder".try_into().expect("valid attr"), responder)
+        .append(content)
+        .build();
+    Iq::Set {
+        id: format!("jingle-accept-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn build_jingle_session_terminate_iq(to: &str, sid: &str, our_jid: Option<&str>) -> Iq {
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr(
+            "action".try_into().expect("valid attr"),
+            "session-terminate",
+        )
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr(
+            "initiator".try_into().expect("valid attr"),
+            our_jid.unwrap_or_default().to_string(),
+        )
+        .append(
+            Element::builder("reason", NS_JINGLE)
+                .append(Element::builder("success", NS_JINGLE))
+                .build(),
+        )
+        .build();
+    Iq::Set {
+        id: format!("jingle-term-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn build_jingle_session_reject_iq(
+    to: &str,
+    sid: &str,
+    our_jid: Option<&str>,
+    reason: CallRejectReason,
+) -> Iq {
+    let reason_el = match reason {
+        CallRejectReason::Decline => Element::builder("decline", NS_JINGLE).build(),
+        CallRejectReason::Busy => Element::builder("busy", NS_JINGLE).build(),
+    };
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr(
+            "action".try_into().expect("valid attr"),
+            "session-terminate",
+        )
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr(
+            "initiator".try_into().expect("valid attr"),
+            our_jid.unwrap_or_default().to_string(),
+        )
+        .append(
+            Element::builder("reason", NS_JINGLE)
+                .append(reason_el)
+                .build(),
+        )
+        .build();
+    Iq::Set {
+        id: format!("jingle-reject-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn build_jingle_session_info_ringing_iq(to: &str, sid: &str, our_jid: Option<&str>) -> Iq {
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr("action".try_into().expect("valid attr"), "session-info")
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr(
+            "initiator".try_into().expect("valid attr"),
+            our_jid.unwrap_or_default().to_string(),
+        )
+        .append(Element::builder("ringing", NS_JINGLE_RTP_INFO))
+        .build();
+    Iq::Set {
+        id: format!("jingle-info-ringing-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn build_jingle_transport_info_iq(
+    to: &str,
+    sid: &str,
+    our_jid: Option<&str>,
+    candidates: &[IceCandidate],
+) -> Iq {
+    let mut transport = Element::builder("transport", NS_JINGLE_ICE)
+        .attr("ufrag".try_into().expect("valid attr"), "dziber")
+        .attr("pwd".try_into().expect("valid attr"), "dziberpwd")
+        .build();
+    for c in candidates {
+        let cand = Element::builder("candidate", NS_JINGLE_ICE)
+            .attr("foundation".try_into().expect("valid attr"), c.foundation.clone())
+            .attr(
+                "component".try_into().expect("valid attr"),
+                c.component.to_string(),
+            )
+            .attr("protocol".try_into().expect("valid attr"), c.protocol.clone())
+            .attr(
+                "priority".try_into().expect("valid attr"),
+                c.priority.to_string(),
+            )
+            .attr("ip".try_into().expect("valid attr"), c.ip.clone())
+            .attr("port".try_into().expect("valid attr"), c.port.to_string())
+            .attr("type".try_into().expect("valid attr"), c.typ.clone())
+            .build();
+        transport.append_child(cand);
+    }
+    let content = Element::builder("content", NS_JINGLE)
+        .attr("creator".try_into().expect("valid attr"), "initiator")
+        .attr("name".try_into().expect("valid attr"), "audio")
+        .append(transport)
+        .build();
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr("action".try_into().expect("valid attr"), "transport-info")
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr(
+            "initiator".try_into().expect("valid attr"),
+            our_jid.unwrap_or_default().to_string(),
+        )
+        .append(content)
+        .build();
+    Iq::Set {
+        id: format!("jingle-transport-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn build_jingle_transport_info_end_iq(to: &str, sid: &str, our_jid: Option<&str>) -> Iq {
+    let content = Element::builder("content", NS_JINGLE)
+        .attr("creator".try_into().expect("valid attr"), "initiator")
+        .attr("name".try_into().expect("valid attr"), "audio")
+        .append(
+            Element::builder("transport", NS_JINGLE_ICE)
+                .append(Element::builder("end-of-candidates", NS_JINGLE_ICE))
+                .build(),
+        )
+        .build();
+    let jingle = Element::builder("jingle", NS_JINGLE)
+        .attr("action".try_into().expect("valid attr"), "transport-info")
+        .attr("sid".try_into().expect("valid attr"), sid.to_string())
+        .attr(
+            "initiator".try_into().expect("valid attr"),
+            our_jid.unwrap_or_default().to_string(),
+        )
+        .append(content)
+        .build();
+    Iq::Set {
+        id: format!("jingle-transport-end-{}", sid),
+        from: None,
+        to: Jid::from_str(to).ok(),
+        payload: jingle,
+    }
+}
+
+fn parse_jingle_candidates(jingle: &Element) -> Vec<IceCandidate> {
+    let mut out = Vec::new();
+    for content in jingle.children() {
+        if content.name() != "content" || content.ns() != NS_JINGLE {
+            continue;
+        }
+        for transport in content.children() {
+            if transport.name() != "transport" || transport.ns() != NS_JINGLE_ICE {
+                continue;
+            }
+            for cand in transport.children() {
+                if cand.name() != "candidate" || cand.ns() != NS_JINGLE_ICE {
+                    continue;
+                }
+                let Some(foundation) = cand.attr("foundation").map(str::to_string) else {
+                    continue;
+                };
+                let Some(component) = cand.attr("component").and_then(|v| v.parse().ok()) else {
+                    continue;
+                };
+                let Some(priority) = cand.attr("priority").and_then(|v| v.parse().ok()) else {
+                    continue;
+                };
+                let Some(port) = cand.attr("port").and_then(|v| v.parse().ok()) else {
+                    continue;
+                };
+                let Some(protocol) = cand.attr("protocol").map(str::to_string) else {
+                    continue;
+                };
+                let Some(ip) = cand.attr("ip").map(str::to_string) else {
+                    continue;
+                };
+                let Some(typ) = cand.attr("type").map(str::to_string) else {
+                    continue;
+                };
+                out.push(IceCandidate {
+                    foundation,
+                    component,
+                    protocol,
+                    priority,
+                    ip,
+                    port,
+                    typ,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn parse_jingle_terminate_reason(jingle: &Element) -> Option<String> {
+    for child in jingle.children() {
+        if child.name() != "reason" || child.ns() != NS_JINGLE {
+            continue;
+        }
+        for r in child.children() {
+            return Some(r.name().to_string());
+        }
+    }
+    None
+}
+
+fn build_iq_jingle_error_reply(to: Option<Jid>, id: String, kind: &str) -> Iq {
+    let condition = match kind {
+        "out-of-order" => "unexpected-request",
+        "unknown-session" => "item-not-found",
+        "tie-break" => "conflict",
+        _ => "bad-request",
+    };
+    let mut error = Element::builder("error", "jabber:client")
+        .attr("type".try_into().expect("valid attr"), "cancel")
+        .append(Element::builder(condition, "urn:ietf:params:xml:ns:xmpp-stanzas"))
+        .build();
+    error.append_child(Element::builder(kind, "urn:xmpp:jingle:errors:1").build());
+    Iq::Error {
+        id,
+        from: None,
+        to,
+        payload: None,
+        error: xmpp_parsers::stanza_error::StanzaError {
+            type_: xmpp_parsers::stanza_error::ErrorType::Cancel,
+            by: None,
+            defined_condition: match condition {
+                "item-not-found" => DefinedCondition::ItemNotFound,
+                "conflict" => DefinedCondition::Conflict,
+                "unexpected-request" => DefinedCondition::UnexpectedRequest,
+                _ => DefinedCondition::BadRequest,
+            },
+            texts: std::collections::BTreeMap::new(),
+            other: Some(error),
+        },
+    }
+}
+
 fn build_mam_query_iq(
     id: impl Into<String>,
     queryid: impl Into<String>,
@@ -784,6 +1441,7 @@ async fn handle_stanza(
     output: &mut mpsc::Sender<XmppEvent>,
     omemo: &mut Option<OmemoManager>,
     pending_iqs: &mut HashMap<String, PendingIq>,
+    jingle_sessions: &mut HashMap<String, JingleSession>,
     our_jid: Option<&str>,
     stream_healthy: &mut bool,
 ) {
@@ -814,6 +1472,19 @@ async fn handle_stanza(
             tracing::info!("[MSG RAW] {:?}", msg);
             if let Some(xml) = xmpp_message_to_xml(&msg) {
                 tracing::info!("[MSG XML] {}", xml);
+            }
+
+            if let Some(received_id) = extract_received_receipt_id(&msg) {
+                let _ = output
+                    .send(XmppEvent::MessageDelivered { id: received_id })
+                    .await;
+                return;
+            }
+
+            maybe_send_delivery_receipt(client, &msg, stream_healthy).await;
+
+            if let Some(state) = extract_chat_state(&msg) {
+                tracing::info!("[CHATSTATE] from={:?} state={}", msg.from, state);
             }
 
             // Check for MAM archive results (XEP-0313)
@@ -930,6 +1601,18 @@ async fn handle_stanza(
             }
 
             if let Some(from) = msg.from.clone() {
+                if let Some(target_id) = extract_replace_id(&msg)
+                    && let Some(body) = msg.bodies.get("")
+                {
+                    let _ = output
+                        .send(XmppEvent::MessageCorrected {
+                            from: from.to_bare().to_string(),
+                            target_id,
+                            body: body.to_string(),
+                        })
+                        .await;
+                    return;
+                }
                 tracing::info!(
                     "[LIVE] message from={:?} body={:?}",
                     from,
@@ -2130,7 +2813,179 @@ async fn handle_stanza(
                         }
                     }
                 }
-                Iq::Set { payload, .. } => {
+                Iq::Set {
+                    id, from, payload, ..
+                } => {
+                    if payload.name() == "jingle" && payload.ns() == NS_JINGLE {
+                        let action = payload.attr("action").unwrap_or_default().to_string();
+                        let sid = payload.attr("sid").unwrap_or_default().to_string();
+                        let from_bare = from
+                            .as_ref()
+                            .map(|j| j.to_bare().to_string())
+                            .unwrap_or_default();
+                        let from_jid = from.clone();
+
+                        let invalid = |kind: &str| build_iq_jingle_error_reply(from_jid.clone(), id.clone(), kind);
+
+                        match action.as_str() {
+                            "session-initiate" => {
+                                // Tie-break: duplicate SID from same peer or SID collision.
+                                if let Some(existing) = jingle_sessions.get(&sid)
+                                    && existing.peer_bare != from_bare
+                                {
+                                    let _ = safe_send_stanza(
+                                        client,
+                                        invalid("tie-break").into(),
+                                        "jingle-invalid",
+                                        stream_healthy,
+                                    ).await;
+                                    return;
+                                }
+                                jingle_sessions.insert(
+                                    sid.clone(),
+                                    JingleSession {
+                                        peer_bare: from_bare.clone(),
+                                        state: JingleSessionState::PendingIncoming,
+                                    },
+                                );
+                                let _ = output
+                                    .send(XmppEvent::IncomingCall {
+                                        from: from_bare,
+                                        sid,
+                                    })
+                                    .await;
+                            }
+                            "session-accept" => {
+                                match jingle_sessions.get_mut(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == from_bare
+                                            && sess.state == JingleSessionState::PendingOutgoing =>
+                                    {
+                                        sess.state = JingleSessionState::Active;
+                                    }
+                                    Some(_) => {
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            invalid("out-of-order").into(),
+                                            "jingle-invalid",
+                                            stream_healthy,
+                                        ).await;
+                                        return;
+                                    }
+                                    None => {
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            invalid("unknown-session").into(),
+                                            "jingle-invalid",
+                                            stream_healthy,
+                                        ).await;
+                                        return;
+                                    }
+                                }
+                                let _ = output
+                                    .send(XmppEvent::CallAccepted {
+                                        with: from_bare,
+                                        sid,
+                                    })
+                                    .await;
+                            }
+                            "session-info" => {
+                                match jingle_sessions.get(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == from_bare
+                                            && matches!(
+                                                sess.state,
+                                                JingleSessionState::PendingOutgoing
+                                                    | JingleSessionState::PendingIncoming
+                                                    | JingleSessionState::Active
+                                            ) => {}
+                                    Some(_) => {
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            invalid("out-of-order").into(),
+                                            "jingle-invalid",
+                                            stream_healthy,
+                                        ).await;
+                                        return;
+                                    }
+                                    None => {
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            invalid("unknown-session").into(),
+                                            "jingle-invalid",
+                                            stream_healthy,
+                                        ).await;
+                                        return;
+                                    }
+                                }
+                                if payload
+                                    .get_child("ringing", NS_JINGLE_RTP_INFO)
+                                    .is_some()
+                                {
+                                    let _ = output
+                                        .send(XmppEvent::CallRinging {
+                                            with: from_bare,
+                                            sid,
+                                        })
+                                        .await;
+                                }
+                            }
+                            "session-terminate" => {
+                                if let Some(sess) = jingle_sessions.get_mut(&sid) {
+                                    sess.state = JingleSessionState::Terminating;
+                                }
+                                let reason = parse_jingle_terminate_reason(&payload)
+                                    .unwrap_or_else(|| String::from("unknown"));
+                                jingle_sessions.remove(&sid);
+                                let _ = output
+                                    .send(XmppEvent::CallEnded {
+                                        with: from_bare,
+                                        sid,
+                                        reason,
+                                    })
+                                    .await;
+                            }
+                            "transport-info" => {
+                                match jingle_sessions.get(&sid) {
+                                    Some(sess)
+                                        if sess.peer_bare == from_bare
+                                            && matches!(
+                                                sess.state,
+                                                JingleSessionState::PendingOutgoing
+                                                    | JingleSessionState::PendingIncoming
+                                                    | JingleSessionState::Active
+                                            ) => {}
+                                    Some(_) => {
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            invalid("out-of-order").into(),
+                                            "jingle-invalid",
+                                            stream_healthy,
+                                        ).await;
+                                        return;
+                                    }
+                                    None => {
+                                        let _ = safe_send_stanza(
+                                            client,
+                                            invalid("unknown-session").into(),
+                                            "jingle-invalid",
+                                            stream_healthy,
+                                        ).await;
+                                        return;
+                                    }
+                                }
+                                let candidates = parse_jingle_candidates(&payload);
+                                let _ = output
+                                    .send(XmppEvent::CallTransportInfo {
+                                        with: from_bare,
+                                        sid,
+                                        candidates,
+                                    })
+                                    .await;
+                            }
+                            _ => {}
+                        }
+                    }
                     tracing::info!(
                         "[ROSTER] IQ set element: name={} ns={}",
                         payload.name(),
@@ -2161,6 +3016,33 @@ async fn handle_stanza(
                                 let _ = output.send(XmppEvent::RosterItem(contact)).await;
                             }
                         }
+                    }
+                    let result = Iq::Result {
+                        id,
+                        from: None,
+                        to: from,
+                        payload: None,
+                    };
+                    let _ =
+                        safe_send_stanza(client, result.into(), "iq-set-ack", stream_healthy).await;
+                }
+                Iq::Get {
+                    id,
+                    from,
+                    payload,
+                    ..
+                } => {
+                    let is_ping = payload.name() == "ping" && payload.ns() == NS_PING;
+                    let result = Iq::Result {
+                        id,
+                        from: None,
+                        to: from,
+                        payload: None,
+                    };
+                    let _ =
+                        safe_send_stanza(client, result.into(), "iq-get-reply", stream_healthy).await;
+                    if is_ping {
+                        tracing::info!("[PING] Replied to XEP-0199 ping");
                     }
                 }
                 Iq::Error { id, error, .. } => {
@@ -2542,7 +3424,6 @@ async fn handle_stanza(
                         }
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -2557,20 +3438,126 @@ fn make_presence() -> XmppPresence {
     presence
 }
 
-fn make_message(to: &str, body: &str) -> XmppMessage {
+fn make_message(to: &str, body: &str, id: &str) -> XmppMessage {
     let to_jid = Jid::from_str(to).unwrap_or_else(|_| Jid::from_str("invalid@localhost").unwrap());
     let mut message = XmppMessage::new(Some(to_jid));
+    message.id = Some(xmpp_parsers::message::Id(id.to_string()));
     if looks_like_room_jid(to) {
         message.type_ = MessageType::Groupchat;
     } else {
         message.type_ = MessageType::Chat;
+        message
+            .payloads
+            .push(Element::builder("request", NS_RECEIPTS).build());
     }
     message.bodies.insert(Lang::default(), body.to_owned());
     message
 }
 
 fn make_file_message(to: &str, filename: &str, url: &str) -> XmppMessage {
-    make_message(to, &format!("📎 {}\n{}", filename, url))
+    make_message(
+        to,
+        &format!("📎 {}\n{}", filename, url),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+}
+
+fn make_correction_message(to: &str, body: &str, id: &str, replace_id: &str) -> XmppMessage {
+    let mut message = make_message(to, body, id);
+    message
+        .payloads
+        .push(Element::builder("replace", NS_MESSAGE_CORRECT).attr(
+            "id".try_into().expect("valid attr"),
+            replace_id.to_string(),
+        ).build());
+    message
+}
+
+fn make_chatstate_message(to: &str, state: ChatState) -> XmppMessage {
+    let to_jid = Jid::from_str(to).unwrap_or_else(|_| Jid::from_str("invalid@localhost").unwrap());
+    let mut message = XmppMessage::new(Some(to_jid));
+    message.type_ = MessageType::Chat;
+    let name = match state {
+        ChatState::Active => "active",
+        ChatState::Composing => "composing",
+    };
+    message.payloads.push(Element::builder(name, NS_CHATSTATES).build());
+    message
+}
+
+fn extract_received_receipt_id(msg: &XmppMessage) -> Option<String> {
+    for payload in &msg.payloads {
+        if payload.name() == "received"
+            && payload.ns() == NS_RECEIPTS
+            && let Some(id) = payload.attr("id")
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+fn extract_replace_id(msg: &XmppMessage) -> Option<String> {
+    for payload in &msg.payloads {
+        if payload.name() == "replace"
+            && payload.ns() == NS_MESSAGE_CORRECT
+            && let Some(id) = payload.attr("id")
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+fn extract_chat_state(msg: &XmppMessage) -> Option<&'static str> {
+    for payload in &msg.payloads {
+        if payload.ns() != NS_CHATSTATES {
+            continue;
+        }
+        match payload.name() {
+            "active" => return Some("active"),
+            "composing" => return Some("composing"),
+            "paused" => return Some("paused"),
+            "inactive" => return Some("inactive"),
+            "gone" => return Some("gone"),
+            _ => {}
+        }
+    }
+    None
+}
+
+async fn maybe_send_delivery_receipt(
+    client: &mut Client,
+    msg: &XmppMessage,
+    stream_healthy: &mut bool,
+) {
+    if msg.type_ != MessageType::Chat {
+        return;
+    }
+    let Some(from) = msg.from.clone() else {
+        return;
+    };
+    let Some(stanza_id) = msg.id.as_ref().map(|id| id.0.clone()) else {
+        return;
+    };
+    let requested = msg
+        .payloads
+        .iter()
+        .any(|p| p.name() == "request" && p.ns() == NS_RECEIPTS);
+    if !requested {
+        return;
+    }
+
+    let mut receipt = XmppMessage::new(Some(from));
+    receipt.type_ = MessageType::Chat;
+    receipt
+        .payloads
+        .push(
+            Element::builder("received", NS_RECEIPTS)
+                .attr("id".try_into().expect("valid attr"), stanza_id)
+                .build(),
+        );
+    let _ = safe_send_stanza(client, receipt.into(), "message-receipt", stream_healthy).await;
 }
 
 fn looks_like_room_jid(jid: &str) -> bool {

@@ -9,6 +9,7 @@ use iced::widget::operation;
 use iced::widget::{Column, Space, button, image, row, text, text_editor};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme, stream, window};
 
+use crate::audio::{AudioCallState, AudioEngine};
 use crate::models::account::{Account, ConnectionStatus};
 use crate::models::contact::Contact;
 use crate::models::conversation::Conversation;
@@ -16,7 +17,7 @@ use crate::models::message::{Direction, Message as ChatMessage};
 use crate::ui::chat;
 use crate::ui::conversation_list;
 use crate::ui::login;
-use crate::xmpp::{XmppCommand, XmppEvent};
+use crate::xmpp::{CallRejectReason, ChatState, IceCandidate, XmppCommand, XmppEvent};
 
 fn avatar_cache_path(jid: &str) -> Option<PathBuf> {
     let safe_jid = jid.replace('/', "_");
@@ -81,6 +82,10 @@ pub enum Message {
     DraftChanged(String),
     SendMessageClicked,
     SendFileClicked,
+    StartCallClicked,
+    EndCallClicked,
+    AcceptIncomingCallClicked,
+    DeclineIncomingCallClicked,
     DownloadFileClicked {
         url: String,
         filename: String,
@@ -133,6 +138,10 @@ pub struct AppState {
     pub window_hidden_to_tray: bool,
     pub show_unsaved_quit_confirm: bool,
     pub chat_message_bodies: HashMap<String, text_editor::Content>,
+    pub audio_engine: AudioEngine,
+    pub active_call_with: Option<String>,
+    pub active_call_sid: Option<String>,
+    pub pending_incoming_call: Option<(String, String)>,
 }
 
 fn refresh_chat_message_bodies(state: &mut AppState) {
@@ -179,6 +188,10 @@ impl Default for AppState {
             window_hidden_to_tray: true,
             show_unsaved_quit_confirm: false,
             chat_message_bodies: HashMap::new(),
+            audio_engine: AudioEngine::new(),
+            active_call_with: None,
+            active_call_sid: None,
+            pending_incoming_call: None,
         };
 
         if let Ok(config) = load_config() {
@@ -281,6 +294,30 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::DraftChanged(text) => {
             state.draft = text;
+            if let Some(idx) = state.selected_conversation
+                && let Some(conv) = state.conversations.get(idx)
+                && let Some(ref mut sender) = state.xmpp_sender
+            {
+                let to = conv.contact_jid.clone();
+                let state_val = if state.draft.trim().is_empty() {
+                    ChatState::Active
+                } else {
+                    ChatState::Composing
+                };
+                let mut sender = sender.clone();
+                return Task::perform(
+                    async move {
+                        let _ = sender
+                            .send(XmppCommand::SendChatState {
+                                to,
+                                state: state_val,
+                            })
+                            .await;
+                    },
+                    |_| Message::JidChanged(String::new()),
+                )
+                .discard();
+            }
             Task::none()
         }
         Message::ChatMessageBodyAction { message_id, action } => {
@@ -312,6 +349,57 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 .map(|a| a.jid.clone())
                 .unwrap_or_default();
 
+            if body.starts_with("/edit ") {
+                let rest = body.trim_start_matches("/edit ").to_string();
+                let mut parts = rest.splitn(2, ' ');
+                let Some(target_id) = parts.next() else {
+                    return Task::none();
+                };
+                let Some(new_body) = parts.next() else {
+                    return Task::none();
+                };
+                let target_id_owned = target_id.to_string();
+                let new_body_owned = new_body.to_string();
+                let correction_id = uuid::Uuid::new_v4().to_string();
+                let corrected = ChatMessage {
+                    id: target_id_owned.clone(),
+                    from: account_jid.clone(),
+                    body: new_body_owned.clone(),
+                    timestamp: chrono::Utc::now(),
+                    status: crate::models::message::MessageStatus::Sent,
+                    direction: Direction::Outgoing,
+                };
+                if let Some(conv) = state.conversations.get_mut(idx)
+                    && let Some(existing) = conv
+                        .messages
+                        .iter_mut()
+                        .find(|m| m.id == target_id_owned)
+                {
+                    *existing = corrected.clone();
+                }
+                let _ = crate::db::update_message_body(&target_id_owned, &new_body_owned);
+                refresh_chat_message_bodies(state);
+                state.draft.clear();
+                if let Some(ref mut sender) = state.xmpp_sender {
+                    let mut sender = sender.clone();
+                    return Task::perform(
+                        async move {
+                            let _ = sender
+                                .send(XmppCommand::SendMessageCorrection {
+                                    id: correction_id,
+                                    to,
+                                    replace_id: target_id_owned,
+                                    body: new_body_owned,
+                                })
+                                .await;
+                        },
+                        |_| Message::JidChanged(String::new()),
+                    )
+                    .discard();
+                }
+                return Task::none();
+            }
+
             let msg = ChatMessage::new(account_jid.clone(), body.clone(), Direction::Outgoing);
             let msg_id = msg.id.clone();
 
@@ -331,7 +419,12 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 let send_task = Task::perform(
                     async move {
                         let _ = sender
-                            .send(XmppCommand::SendMessage { to, body, omemo })
+                            .send(XmppCommand::SendMessage {
+                                id: msg_id.clone(),
+                                to,
+                                body,
+                                omemo,
+                            })
                             .await;
                         msg_id
                     },
@@ -363,6 +456,156 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                             .send(XmppCommand::SendFile {
                                 to,
                                 path: path_string,
+                            })
+                            .await;
+                    },
+                    |_| Message::JidChanged(String::new()),
+                )
+                .discard();
+            }
+            Task::none()
+        }
+        Message::StartCallClicked => {
+            let Some(idx) = state.selected_conversation else {
+                return Task::none();
+            };
+            let Some(conv) = state.conversations.get(idx) else {
+                return Task::none();
+            };
+            if state.audio_engine.state() == AudioCallState::Active {
+                return Task::none();
+            }
+            let to = conv.contact_jid.clone();
+            let sid = uuid::Uuid::new_v4().to_string();
+            if state.audio_engine.start_call(&to, &sid).is_err() {
+                state.connection_status = "Failed to start audio engine".to_string();
+                return Task::none();
+            }
+            state.active_call_with = Some(to.clone());
+            state.active_call_sid = Some(sid.clone());
+            if let Some(ref mut sender) = state.xmpp_sender {
+                let mut sender = sender.clone();
+                let candidates = state
+                    .audio_engine
+                    .local_candidates()
+                    .into_iter()
+                    .map(|c| IceCandidate {
+                        foundation: c.foundation,
+                        component: c.component,
+                        protocol: c.protocol,
+                        priority: c.priority,
+                        ip: c.ip,
+                        port: c.port,
+                        typ: c.typ,
+                    })
+                    .collect::<Vec<_>>();
+                return Task::perform(
+                    async move {
+                        let _ = sender.send(XmppCommand::InitiateCall { to: to.clone() }).await;
+                        let _ = sender
+                            .send(XmppCommand::SendTransportInfo {
+                                with: to.clone(),
+                                sid: sid.clone(),
+                                candidates,
+                            })
+                            .await;
+                        let _ = sender
+                            .send(XmppCommand::SendTransportInfoEnd { with: to, sid })
+                            .await;
+                    },
+                    |_| Message::JidChanged(String::new()),
+                )
+                .discard();
+            }
+            Task::none()
+        }
+        Message::EndCallClicked => {
+            let (Some(with), Some(sid)) = (
+                state.active_call_with.clone(),
+                state.active_call_sid.clone(),
+            ) else {
+                return Task::none();
+            };
+            state.audio_engine.stop_call();
+            state.active_call_with = None;
+            state.active_call_sid = None;
+            if let Some(ref mut sender) = state.xmpp_sender {
+                let mut sender = sender.clone();
+                return Task::perform(
+                    async move {
+                        let _ = sender.send(XmppCommand::EndCall { with, sid }).await;
+                    },
+                    |_| Message::JidChanged(String::new()),
+                )
+                .discard();
+            }
+            Task::none()
+        }
+        Message::AcceptIncomingCallClicked => {
+            let Some((with, sid)) = state.pending_incoming_call.clone() else {
+                return Task::none();
+            };
+            state.pending_incoming_call = None;
+            if state.audio_engine.start_call(&with, &sid).is_err() {
+                state.connection_status = "Failed to start audio engine".to_string();
+                return Task::none();
+            }
+            state.active_call_with = Some(with.clone());
+            state.active_call_sid = Some(sid.clone());
+            if let Some(ref mut sender) = state.xmpp_sender {
+                let mut sender = sender.clone();
+                let candidates = state
+                    .audio_engine
+                    .local_candidates()
+                    .into_iter()
+                    .map(|c| IceCandidate {
+                        foundation: c.foundation,
+                        component: c.component,
+                        protocol: c.protocol,
+                        priority: c.priority,
+                        ip: c.ip,
+                        port: c.port,
+                        typ: c.typ,
+                    })
+                    .collect::<Vec<_>>();
+                return Task::perform(
+                    async move {
+                        let _ = sender
+                            .send(XmppCommand::AcceptCall {
+                                with: with.clone(),
+                                sid: sid.clone(),
+                            })
+                            .await;
+                        let _ = sender
+                            .send(XmppCommand::SendTransportInfo {
+                                with: with.clone(),
+                                sid: sid.clone(),
+                                candidates,
+                            })
+                            .await;
+                        let _ = sender
+                            .send(XmppCommand::SendTransportInfoEnd { with, sid })
+                            .await;
+                    },
+                    |_| Message::JidChanged(String::new()),
+                )
+                .discard();
+            }
+            Task::none()
+        }
+        Message::DeclineIncomingCallClicked => {
+            let Some((with, sid)) = state.pending_incoming_call.take() else {
+                return Task::none();
+            };
+            if let Some(ref mut sender) = state.xmpp_sender {
+                let mut sender = sender.clone();
+                return Task::perform(
+                    async move {
+                        let _ = sender
+                            .send(XmppCommand::RejectCall {
+                                with,
+                                sid,
+                                reason: CallRejectReason::Decline,
                             })
                             .await;
                     },
@@ -567,6 +810,10 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 state.omemo_qr_uri = None;
                 state.omemo_qr_handle = None;
                 state.avatar_handles.clear();
+                state.audio_engine.stop_call();
+                state.active_call_with = None;
+                state.active_call_sid = None;
+                state.pending_incoming_call = None;
                 refresh_chat_message_bodies(state);
                 Task::none()
             }
@@ -661,6 +908,42 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 }
             }
             XmppEvent::MessageSent { .. } => Task::none(),
+            XmppEvent::MessageDelivered { id } => {
+                for conv in &mut state.conversations {
+                    if let Some(msg) = conv.messages.iter_mut().find(|m| m.id == id) {
+                        msg.status = crate::models::message::MessageStatus::Delivered;
+                        break;
+                    }
+                }
+                if let Err(e) = crate::db::update_message_status(
+                    &id,
+                    crate::models::message::MessageStatus::Delivered,
+                ) {
+                    tracing::info!("Failed to update message status: {}", e);
+                }
+                refresh_chat_message_bodies(state);
+                Task::none()
+            }
+            XmppEvent::MessageCorrected {
+                from,
+                target_id,
+                body,
+            } => {
+                for conv in &mut state.conversations {
+                    if conv.contact_jid != from {
+                        continue;
+                    }
+                    if let Some(msg) = conv.messages.iter_mut().find(|m| m.id == target_id) {
+                        msg.body = body.clone();
+                        msg.timestamp = chrono::Utc::now();
+                    }
+                }
+                if let Err(e) = crate::db::update_message_body(&target_id, &body) {
+                    tracing::info!("Failed to update corrected message: {}", e);
+                }
+                refresh_chat_message_bodies(state);
+                Task::none()
+            }
             XmppEvent::OmemoMessageReceived {
                 from,
                 body,
@@ -717,6 +1000,89 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 state.avatar_handles.insert(jid, handle);
                 Task::none()
             }
+            XmppEvent::IncomingCall { from, sid } => {
+                if state.audio_engine.state() == AudioCallState::Active {
+                    if let Some(ref mut sender) = state.xmpp_sender {
+                        let mut sender = sender.clone();
+                        return Task::perform(
+                            async move {
+                                let _ = sender
+                                    .send(XmppCommand::RejectCall {
+                                        with: from,
+                                        sid,
+                                        reason: CallRejectReason::Busy,
+                                    })
+                                    .await;
+                            },
+                            |_| Message::JidChanged(String::new()),
+                        )
+                        .discard();
+                    }
+                    return Task::none();
+                }
+                state.connection_status = format!("Incoming call from {}", from);
+                state.pending_incoming_call = Some((from, sid));
+                if let Some((with, sid)) = state.pending_incoming_call.clone()
+                    && let Some(ref mut sender) = state.xmpp_sender
+                {
+                    let mut sender = sender.clone();
+                    return Task::perform(
+                        async move {
+                            let _ = sender.send(XmppCommand::SendCallRinging { with, sid }).await;
+                        },
+                        |_| Message::JidChanged(String::new()),
+                    )
+                    .discard();
+                }
+                Task::none()
+            }
+            XmppEvent::CallAccepted { with, sid } => {
+                state.connection_status = format!("Call active with {}", with);
+                if state.audio_engine.start_call(&with, &sid).is_ok() {
+                    state.active_call_with = Some(with);
+                    state.active_call_sid = Some(sid);
+                }
+                Task::none()
+            }
+            XmppEvent::CallRinging { with, sid } => {
+                state.connection_status = format!("Ringing {} ({})...", with, sid);
+                Task::none()
+            }
+            XmppEvent::CallTransportInfo {
+                with,
+                sid,
+                candidates,
+            } => {
+                if state.active_call_sid.as_deref() == Some(sid.as_str())
+                    || state.pending_incoming_call.as_ref().is_some_and(|(w, s)| {
+                        w == &with && s == &sid
+                    })
+                {
+                    let mapped = candidates
+                        .into_iter()
+                        .map(|c| crate::audio::AudioIceCandidate {
+                            foundation: c.foundation,
+                            component: c.component,
+                            protocol: c.protocol,
+                            priority: c.priority,
+                            ip: c.ip,
+                            port: c.port,
+                            typ: c.typ,
+                        })
+                        .collect();
+                    state.audio_engine.apply_remote_candidates(mapped);
+                }
+                Task::none()
+            }
+            XmppEvent::CallEnded { with, sid, reason } => {
+                state.connection_status =
+                    format!("Call ended with {} ({}, reason={})", with, sid, reason);
+                state.audio_engine.stop_call();
+                state.active_call_with = None;
+                state.active_call_sid = None;
+                state.pending_incoming_call = None;
+                Task::none()
+            }
         },
     }
 }
@@ -764,6 +1130,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
                 &state.draft,
                 &state.chat_message_bodies,
                 &state.avatar_handles,
+                state.active_call_with.as_deref(),
             );
 
             let content = row![sidebar, chat_view].spacing(0);
@@ -797,6 +1164,17 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             .padding(8);
 
             let mut root = Column::new().push(toolbar);
+            if let Some((from, _sid)) = &state.pending_incoming_call {
+                root = root.push(
+                    row![
+                        text(format!("Incoming call from {}", from)).size(12),
+                        button("Accept").on_press(Message::AcceptIncomingCallClicked),
+                        button("Decline").on_press(Message::DeclineIncomingCallClicked),
+                    ]
+                    .spacing(8)
+                    .padding(8),
+                );
+            }
 
             if state.show_omemo_qr {
                 let mut qr_col = Column::new()
