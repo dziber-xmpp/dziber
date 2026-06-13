@@ -4,6 +4,8 @@ mod db;
 mod models;
 mod notify;
 mod omemo;
+mod personal_data;
+mod secrets;
 mod tray;
 mod ui;
 mod xmpp;

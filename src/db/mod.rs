@@ -8,6 +8,9 @@ use crate::db::models::DbMessage;
 use crate::db::schema::messages;
 use crate::models::message::{Message, MessageStatus};
 
+pub mod calendar;
+pub mod contacts;
+pub mod mail;
 pub mod models;
 pub mod omemo;
 pub mod schema;

@@ -1,5 +1,9 @@
 pub mod app;
+pub mod calendar;
 pub mod chat;
+pub mod contacts;
 pub mod conversation_list;
 pub mod login;
+pub mod mail;
 pub mod omemo_qr;
+pub mod settings;

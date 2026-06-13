@@ -324,13 +324,16 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = safe_send_stanza(c, mam_iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
                             Some(XmppEventRaw::Stanza(stanza)) => {
+                                let mut sessions = SessionState {
+                                    pending_iqs: &mut pending_iqs,
+                                    jingle_sessions: &mut jingle_sessions,
+                                };
                                 handle_stanza(
                                     stanza,
                                     c,
                                     &mut output,
                                     &mut omemo,
-                                    &mut pending_iqs,
-                                    &mut jingle_sessions,
+                                    &mut sessions,
                                     our_jid.as_deref(),
                                     &mut stream_healthy,
                                 ).await;
@@ -1229,7 +1232,7 @@ fn parse_jingle_terminate_reason(jingle: &Element) -> Option<String> {
         if child.name() != "reason" || child.ns() != NS_JINGLE {
             continue;
         }
-        for r in child.children() {
+        if let Some(r) = child.children().next() {
             return Some(r.name().to_string());
         }
     }
@@ -1309,10 +1312,14 @@ async fn process_message(
     omemo: &mut Option<OmemoManager>,
     direction: Direction,
     from: Jid,
-    timestamp: Option<DateTime<Utc>>,
+    archive: Option<(Option<DateTime<Utc>>, String)>,
     our_jid: Option<&str>,
-    archive_id: Option<String>,
 ) {
+    let (timestamp, archive_id) = match archive {
+        Some((t, id)) => (t, Some(id)),
+        None => (None, None),
+    };
+
     fn hex(data: &[u8]) -> String {
         data.iter()
             .map(|b| format!("{:02x}", b))
@@ -1435,16 +1442,25 @@ async fn process_message(
     }
 }
 
+struct SessionState<'a> {
+    pending_iqs: &'a mut HashMap<String, PendingIq>,
+    jingle_sessions: &'a mut HashMap<String, JingleSession>,
+}
+
 async fn handle_stanza(
     stanza: Stanza,
     client: &mut Client,
     output: &mut mpsc::Sender<XmppEvent>,
     omemo: &mut Option<OmemoManager>,
-    pending_iqs: &mut HashMap<String, PendingIq>,
-    jingle_sessions: &mut HashMap<String, JingleSession>,
+    sessions: &mut SessionState<'_>,
     our_jid: Option<&str>,
     stream_healthy: &mut bool,
 ) {
+    let SessionState {
+        pending_iqs,
+        jingle_sessions,
+    } = sessions;
+
     match stanza {
         Stanza::Message(mut msg) => {
             if msg.type_ == MessageType::Error {
@@ -1516,9 +1532,8 @@ async fn handle_stanza(
                                 omemo,
                                 Direction::Outgoing,
                                 to,
-                                timestamp,
+                                Some((timestamp, mam_result.id.to_string())),
                                 our_jid,
-                                Some(mam_result.id.to_string()),
                             )
                             .await;
                         }
@@ -1532,9 +1547,8 @@ async fn handle_stanza(
                                 omemo,
                                 Direction::Incoming,
                                 from,
-                                timestamp,
+                                Some((timestamp, mam_result.id.to_string())),
                                 our_jid,
-                                Some(mam_result.id.to_string()),
                             )
                             .await;
                         }
@@ -1547,9 +1561,8 @@ async fn handle_stanza(
                             omemo,
                             Direction::Incoming,
                             from,
-                            timestamp,
+                            Some((timestamp, mam_result.id.to_string())),
                             our_jid,
-                            Some(mam_result.id.to_string()),
                         )
                         .await;
                     }
@@ -1576,7 +1589,6 @@ async fn handle_stanza(
                                 from,
                                 None,
                                 our_jid,
-                                None,
                             )
                             .await;
                         }
@@ -1591,7 +1603,6 @@ async fn handle_stanza(
                                 to,
                                 None,
                                 our_jid,
-                                None,
                             )
                             .await;
                         }
@@ -1626,7 +1637,6 @@ async fn handle_stanza(
                     from,
                     None,
                     our_jid,
-                    None,
                 )
                 .await;
             }
@@ -3637,7 +3647,9 @@ async fn send_http_upload_slot_request(
     safe_send_stanza(client, iq.into(), "http-upload-slot", stream_healthy).await
 }
 
-fn parse_http_upload_slot(payload: &Element) -> Option<(String, String, Vec<(String, String)>)> {
+type HttpUploadSlot = (String, String, Vec<(String, String)>);
+
+fn parse_http_upload_slot(payload: &Element) -> Option<HttpUploadSlot> {
     if payload.name() != "slot" || payload.ns() != "urn:xmpp:http:upload:0" {
         return None;
     }

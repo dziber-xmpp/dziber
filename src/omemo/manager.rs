@@ -1,14 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use rand09::SeedableRng;
 use vodozemac::Curve25519PublicKey;
 use vodozemac::olm::OlmMessage;
 use vodozemac::olm::PreKeyMessage as VodoPreKeyMessage;
-use wa_rs_libsignal::protocol::{
-    CiphertextMessageType, DeviceId, IdentityKey, PreKeyBundle, PreKeyId, PreKeySignalMessage,
-    ProtocolAddress, PublicKey, SignedPreKeyId, UsePQRatchet, message_decrypt_prekey,
-    message_decrypt_signal, message_encrypt, process_prekey_bundle,
-};
 
 use crate::omemo::account::OmemoAccount;
 use crate::omemo::bundle::Bundle;
@@ -33,45 +27,10 @@ pub struct OmemoManager {
     pub trust_store: TrustStore,
     /// JIDs for which only v0 bundles were found (send v0 messages to these).
     pub v0_jids: HashSet<String>,
-    signal_store: Option<crate::omemo::signal_store::SignalStore>,
-    signal_store_prev: Option<crate::omemo::signal_store::SignalStore>,
     pickle_key: [u8; 32],
-    stale_prekey_self_healed: bool,
 }
 
 impl OmemoManager {
-    fn to_signal_bundle(bundle: &Bundle, device_id: u32) -> Option<PreKeyBundle> {
-        let ik: [u8; 32] = bundle.ik.as_slice().try_into().ok()?;
-        let spk: [u8; 32] = bundle.spk.as_slice().try_into().ok()?;
-        let (otk_id, otk) = bundle.prekeys.first()?;
-        let otk: [u8; 32] = otk.as_slice().try_into().ok()?;
-
-        let ik_pub = PublicKey::from_djb_public_key_bytes(&ik).ok()?;
-        let spk_pub = PublicKey::from_djb_public_key_bytes(&spk).ok()?;
-        let otk_pub = PublicKey::from_djb_public_key_bytes(&otk).ok()?;
-        let identity = IdentityKey::new(ik_pub);
-
-        PreKeyBundle::new(
-            0, // OMEMO v0 doesn't carry registration id; 0 is commonly used.
-            DeviceId::from(device_id),
-            Some((PreKeyId::from(*otk_id), otk_pub)),
-            SignedPreKeyId::from(bundle.spk_id),
-            spk_pub,
-            bundle.spks.clone(),
-            identity,
-        )
-        .ok()
-    }
-
-    fn rebuild_signal_stores(&mut self) {
-        self.signal_store =
-            crate::omemo::signal_store::SignalStore::from_omemo_account(&self.account);
-        self.signal_store_prev =
-            crate::omemo::signal_store::SignalStore::from_omemo_account_with_previous_fallback(
-                &self.account,
-            );
-    }
-
     fn ensure_account_material(account: &mut OmemoAccount) -> bool {
         let mut changed = false;
         if account.fallback_secret_key_bytes().is_none() {
@@ -101,7 +60,7 @@ impl OmemoManager {
         let pickle_key = store::load_or_generate_key();
         let mut account = OmemoAccount::generate(device_id);
         let _ = Self::ensure_account_material(&mut account);
-        let mut mgr = Self {
+        Self {
             account,
             our_jid: None,
             sessions: HashMap::new(),
@@ -109,13 +68,8 @@ impl OmemoManager {
             bundle_cache: HashMap::new(),
             trust_store: TrustStore::new(),
             v0_jids: HashSet::new(),
-            signal_store: None,
-            signal_store_prev: None,
             pickle_key,
-            stale_prekey_self_healed: false,
-        };
-        mgr.rebuild_signal_stores();
-        mgr
+        }
     }
 
     pub fn load_or_generate(device_id: u32) -> Self {
@@ -145,7 +99,7 @@ impl OmemoManager {
             let device_lists = crate::db::omemo::load_omemo_device_lists().unwrap_or_default();
             let bundle_cache = crate::db::omemo::load_omemo_bundle_cache().unwrap_or_default();
             let trust_store = crate::db::omemo::load_omemo_trust_store().unwrap_or_default();
-            let mut mgr = Self {
+            return Self {
                 account,
                 our_jid: None,
                 sessions,
@@ -153,21 +107,15 @@ impl OmemoManager {
                 bundle_cache,
                 trust_store,
                 v0_jids: HashSet::new(),
-                signal_store: None,
-                signal_store_prev: None,
                 pickle_key,
-                stale_prekey_self_healed: false,
             };
-            mgr.rebuild_signal_stores();
-            return mgr;
         }
         let compatible_device_id = if device_id == 0 || device_id > Self::MAX_COMPAT_DEVICE_ID {
             Self::generate_compatible_device_id()
         } else {
             device_id
         };
-        let mut mgr = Self::generate(compatible_device_id);
-        mgr.rebuild_signal_stores();
+        let mgr = Self::generate(compatible_device_id);
         let _ = crate::db::omemo::save_omemo_account(&mgr.account, &mgr.pickle_key);
         mgr
     }
@@ -220,19 +168,12 @@ impl OmemoManager {
         device_id: u32,
         bundle: &Bundle,
     ) -> bool {
-        // Keep runtime behavior aligned with rexisce: vodozemac Olm sessions are
-        // the source of truth for OMEMO session creation/decrypt, avoiding mixed
-        // libsignal/vodozemac runtime state.
         let had_vodo = self
             .sessions
             .get(jid)
             .and_then(|m| m.get(&device_id))
             .is_some();
-        let had_signal = self
-            .signal_store
-            .as_ref()
-            .is_some_and(|s| s.has_session_for(jid, device_id));
-        if had_vodo && had_signal {
+        if had_vodo {
             return true;
         }
 
@@ -252,52 +193,13 @@ impl OmemoManager {
         };
         let their_otk = Curve25519PublicKey::from(otk_bytes);
 
-        if !had_vodo {
-            let session =
-                session::create_outbound_session(&self.account.inner, their_identity, their_otk);
-            self.sessions
-                .entry(jid.to_string())
-                .or_default()
-                .insert(device_id, session);
-        }
+        let session =
+            session::create_outbound_session(&self.account.inner, their_identity, their_otk);
+        self.sessions
+            .entry(jid.to_string())
+            .or_default()
+            .insert(device_id, session);
         self.cache_bundle(jid, device_id, bundle);
-
-        // Also initialize libsignal session state for Conversations-compatible
-        // prekey message serialization on outbound OMEMO key slots.
-        // Important: never overwrite an existing libsignal session from a bundle
-        // refresh; normal (kex=false) inbound messages depend on preserved ratchet state.
-        if !had_signal
-            && let Some(sig_store) = self.signal_store.clone()
-            && let Some(sig_bundle) = Self::to_signal_bundle(bundle, device_id)
-        {
-            let mut session_store = sig_store.clone();
-            let mut identity_store = sig_store.clone();
-            let remote = ProtocolAddress::new(jid.to_string(), DeviceId::from(device_id));
-            let mut csprng = rand09::rngs::StdRng::from_os_rng();
-            let process_res = futures::executor::block_on(process_prekey_bundle(
-                &remote,
-                &mut session_store,
-                &mut identity_store,
-                &sig_bundle,
-                &mut csprng,
-                UsePQRatchet::No,
-            ));
-            match process_res {
-                Ok(()) => {
-                    // Persist newly created libsignal session so message_encrypt
-                    // can find it later (avoid SessionNotFound fallback path).
-                    self.signal_store = Some(session_store);
-                }
-                Err(e) => {
-                    tracing::info!(
-                        "[OMEMO signal] process_prekey_bundle failed for {}:{}: {:?}",
-                        jid,
-                        device_id,
-                        e
-                    );
-                }
-            }
-        }
         true
     }
 
@@ -389,73 +291,28 @@ impl OmemoManager {
                 };
                 let _ = self.create_session_from_bundle(to, *device_id, &bundle);
             }
-            let mut used_libsignal = false;
-            if let Some(base_store) = self.signal_store.clone() {
-                let remote = ProtocolAddress::new(to.to_string(), DeviceId::from(*device_id));
-                let mut session_store = base_store.clone();
-                let mut identity_store = base_store.clone();
-                match futures::executor::block_on(message_encrypt(
-                    &plaintext,
-                    &remote,
-                    &mut session_store,
-                    &mut identity_store,
-                )) {
-                    Ok(ct) => {
-                        // Persist advanced session state after each encrypt.
-                        self.signal_store = Some(session_store.clone());
-                        let kex = matches!(ct.message_type(), CiphertextMessageType::PreKey);
-                        let data = ct.serialize().to_vec();
-                        recipient_keys.push(MessageKey {
-                            rid: *device_id,
-                            kex,
-                            data,
-                        });
-                        used_libsignal = true;
-                    }
-                    Err(e) => {
-                        tracing::info!(
-                            "[OMEMO signal] message_encrypt failed for {}:{}: {:?}",
-                            to,
-                            device_id,
-                            e
-                        );
-                    }
-                }
-            }
-            if !used_libsignal {
-                // Avoid emitting non-Conversations-compatible key slots when
-                // libsignal path is available but failed for this device.
-                if self.signal_store.is_some() {
+            let session = match self.sessions.get_mut(to).and_then(|m| m.get_mut(device_id)) {
+                Some(s) => s,
+                None => {
                     tracing::info!(
-                        "[OMEMO encrypt] Skipping recipient {} device {} (no libsignal slot)",
+                        "[OMEMO encrypt] No session for recipient {} device {}",
                         to,
                         device_id
                     );
                     continue;
                 }
-                let session = match self.sessions.get_mut(to).and_then(|m| m.get_mut(device_id)) {
-                    Some(s) => s,
-                    None => {
-                        tracing::info!(
-                            "[OMEMO encrypt] No session for recipient {} device {}",
-                            to,
-                            device_id
-                        );
-                        continue;
-                    }
-                };
-                let olm_msg = session::encrypt(session, &plaintext);
-                let kex = matches!(olm_msg, OlmMessage::PreKey(_));
-                let data = match olm_msg {
-                    OlmMessage::Normal(ref m) => m.to_bytes(),
-                    OlmMessage::PreKey(ref m) => m.to_bytes(),
-                };
-                recipient_keys.push(MessageKey {
-                    rid: *device_id,
-                    kex,
-                    data,
-                });
-            }
+            };
+            let olm_msg = session::encrypt(session, &plaintext);
+            let kex = matches!(olm_msg, OlmMessage::PreKey(_));
+            let data = match olm_msg {
+                OlmMessage::Normal(ref m) => m.to_bytes(),
+                OlmMessage::PreKey(ref m) => m.to_bytes(),
+            };
+            recipient_keys.push(MessageKey {
+                rid: *device_id,
+                kex,
+                data,
+            });
         }
         if !recipient_keys.is_empty() {
             key_groups.push(KeysGroup {
@@ -469,68 +326,25 @@ impl OmemoManager {
             own_devices.retain(|d| *d != 0);
             let mut own_keys = Vec::new();
             for device_id in &own_devices {
-                let mut used_libsignal = false;
-                if let Some(base_store) = self.signal_store.clone() {
-                    let remote =
-                        ProtocolAddress::new(our_jid.to_string(), DeviceId::from(*device_id));
-                    let mut session_store = base_store.clone();
-                    let mut identity_store = base_store.clone();
-                    match futures::executor::block_on(message_encrypt(
-                        &plaintext,
-                        &remote,
-                        &mut session_store,
-                        &mut identity_store,
-                    )) {
-                        Ok(ct) => {
-                            // Persist advanced session state after each encrypt.
-                            self.signal_store = Some(session_store.clone());
-                            let kex = matches!(ct.message_type(), CiphertextMessageType::PreKey);
-                            let data = ct.serialize().to_vec();
-                            own_keys.push(MessageKey {
-                                rid: *device_id,
-                                kex,
-                                data,
-                            });
-                            used_libsignal = true;
-                        }
-                        Err(e) => {
-                            tracing::info!(
-                                "[OMEMO signal] message_encrypt failed for own {}:{}: {:?}",
-                                our_jid,
-                                device_id,
-                                e
-                            );
-                        }
-                    }
-                }
-                if !used_libsignal {
-                    if self.signal_store.is_some() {
-                        tracing::info!(
-                            "[OMEMO encrypt] Skipping own device {} (no libsignal slot)",
-                            device_id
-                        );
-                        continue;
-                    }
-                    let session = match self
-                        .sessions
-                        .get_mut(&our_jid)
-                        .and_then(|m| m.get_mut(device_id))
-                    {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let olm_msg = session::encrypt(session, &plaintext);
-                    let kex = matches!(olm_msg, OlmMessage::PreKey(_));
-                    let data = match olm_msg {
-                        OlmMessage::Normal(ref m) => m.to_bytes(),
-                        OlmMessage::PreKey(ref m) => m.to_bytes(),
-                    };
-                    own_keys.push(MessageKey {
-                        rid: *device_id,
-                        kex,
-                        data,
-                    });
-                }
+                let session = match self
+                    .sessions
+                    .get_mut(&our_jid)
+                    .and_then(|m| m.get_mut(device_id))
+                {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let olm_msg = session::encrypt(session, &plaintext);
+                let kex = matches!(olm_msg, OlmMessage::PreKey(_));
+                let data = match olm_msg {
+                    OlmMessage::Normal(ref m) => m.to_bytes(),
+                    OlmMessage::PreKey(ref m) => m.to_bytes(),
+                };
+                own_keys.push(MessageKey {
+                    rid: *device_id,
+                    kex,
+                    data,
+                });
             }
             if !own_keys.is_empty() {
                 key_groups.push(KeysGroup {
@@ -1174,250 +988,6 @@ impl OmemoManager {
         };
 
         let plaintext = if key_slot.kex {
-            // First, try direct libsignal prekey decrypt path (Conversations-compatible).
-            if let Some(base_store) = self.signal_store.clone() {
-                let mut prekey_candidates: Vec<Vec<u8>> = Vec::new();
-                prekey_candidates.push(key_slot.data.clone());
-                if !key_slot.data.is_empty() {
-                    let mut outer = key_slot.data.clone();
-                    if matches!(outer[0], 0x22 | 0x33 | 0x44) {
-                        outer[0] &= 0x0f;
-                        prekey_candidates.push(outer.clone());
-                        if outer.len() > 80 {
-                            let mut inner = outer.clone();
-                            // Common Conversations prekey shape here starts around byte 81.
-                            if matches!(inner[81], 0x22 | 0x33 | 0x44) {
-                                inner[81] &= 0x0f;
-                                prekey_candidates.push(inner);
-                            }
-                        }
-                    }
-                }
-                for prekey_raw in prekey_candidates {
-                    let Ok(prekey_msg) = PreKeySignalMessage::try_from(prekey_raw.as_slice())
-                    else {
-                        continue;
-                    };
-                    let req_spk: u32 = prekey_msg.signed_pre_key_id().into();
-                    let req_pk: Option<u32> = prekey_msg.pre_key_id().map(Into::into);
-                    let reg_id = prekey_msg.registration_id();
-                    let base_key_hex = {
-                        let b = prekey_msg.base_key().serialize();
-                        b.iter()
-                            .take(8)
-                            .map(|x| format!("{:02x}", x))
-                            .collect::<String>()
-                    };
-                    let ident_key_hex = {
-                        let b = prekey_msg.identity_key().public_key().serialize();
-                        b.iter()
-                            .take(8)
-                            .map(|x| format!("{:02x}", x))
-                            .collect::<String>()
-                    };
-                    tracing::info!(
-                        "[OMEMO prekey parsed] reg_id={} prekey_id={:?} signed_prekey_id={} base8={} ident8={} raw_first8={}",
-                        reg_id,
-                        req_pk,
-                        req_spk,
-                        base_key_hex,
-                        ident_key_hex,
-                        prekey_raw
-                            .iter()
-                            .take(8)
-                            .map(|x| format!("{:02x}", x))
-                            .collect::<String>()
-                    );
-                    if let Some(sig_store_dbg) = self.signal_store.clone() {
-                        let mut local_pre = sig_store_dbg.prekey_ids_sorted();
-                        local_pre.sort_unstable();
-                        let local_head = local_pre.iter().take(16).copied().collect::<Vec<_>>();
-                        tracing::info!(
-                            "[OMEMO prekey local] signed_prekey_id={} prekey_count={} prekey_head={:?}",
-                            sig_store_dbg.signed_prekey_id(),
-                            local_pre.len(),
-                            local_head
-                        );
-                    }
-                    let requested_spk_id: u32 = prekey_msg.signed_pre_key_id().into();
-                    let current_spk_id = base_store.signed_prekey_id();
-                    let prev_spk_id = self
-                        .signal_store_prev
-                        .as_ref()
-                        .map(|s| s.signed_prekey_id())
-                        .unwrap_or(current_spk_id);
-                    if !self.stale_prekey_self_healed
-                        && requested_spk_id == 1
-                        && requested_spk_id != current_spk_id
-                        && requested_spk_id != prev_spk_id
-                    {
-                        // Keep OMEMO identity/device stable. Rotating local identity here
-                        // invalidates established peer sessions and leads to persistent
-                        // kex=false decrypt failures until all peers reset sessions.
-                        self.stale_prekey_self_healed = true;
-                        tracing::info!(
-                            "[OMEMO] Stale signed-prekey id={} (current={}, prev={}) detected; ignoring auto-rotate to preserve session continuity",
-                            requested_spk_id,
-                            current_spk_id,
-                            prev_spk_id
-                        );
-                    }
-                    let remote =
-                        ProtocolAddress::new(from_bare.to_string(), DeviceId::from(msg.header.sid));
-                    for (label, store) in [
-                        ("current", base_store.clone()),
-                        (
-                            "previous-fallback",
-                            self.signal_store_prev
-                                .clone()
-                                .unwrap_or_else(|| base_store.clone()),
-                        ),
-                    ] {
-                        for use_pq in [UsePQRatchet::No, UsePQRatchet::Yes] {
-                            let pq_label = match use_pq {
-                                UsePQRatchet::No => "no",
-                                UsePQRatchet::Yes => "yes",
-                            };
-                            let mut session_store = store.clone();
-                            let mut identity_store = store.clone();
-                            let mut prekey_store = store.clone();
-                            let signed_prekey_store = store.clone();
-                            let mut csprng = rand09::rngs::StdRng::from_os_rng();
-                            match futures::executor::block_on(message_decrypt_prekey(
-                                &prekey_msg,
-                                &remote,
-                                &mut session_store,
-                                &mut identity_store,
-                                &mut prekey_store,
-                                &signed_prekey_store,
-                                &mut csprng,
-                                use_pq,
-                            )) {
-                                Ok(pt) => {
-                                    tracing::info!(
-                                        "[OMEMO decrypt] libsignal prekey decrypt succeeded ({}, pq={}), len={}",
-                                        label,
-                                        pq_label,
-                                        pt.len()
-                                    );
-                                    self.signal_store = Some(session_store);
-                                    let payload = msg.payload.as_ref()?;
-                                    if pt.len() == 32 {
-                                        let iv = msg.header.iv.as_ref()?;
-                                        if iv.len() != 12 {
-                                            return None;
-                                        }
-                                        let key: [u8; 16] = pt[..16].try_into().ok()?;
-                                        let tag: [u8; 16] = pt[16..32].try_into().ok()?;
-                                        let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                                        let body = crypto::decrypt_payload_v0_conversations(
-                                            payload, &key, &tag, &nonce,
-                                        )?;
-                                        return String::from_utf8(body).ok();
-                                    } else if pt.len() == 48 {
-                                        let key: [u8; 32] = pt[..32].try_into().ok()?;
-                                        let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                        let body =
-                                            crypto::decrypt_payload_v0(payload, &key, &hmac)?;
-                                        return String::from_utf8(body).ok();
-                                    }
-                                }
-                                Err(e) => {
-                                    let err_txt = format!("{:?}", e);
-                                    if err_txt.contains("DuplicatedMessage") {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] duplicate prekey message ignored ({}, pq={})",
-                                            label,
-                                            pq_label
-                                        );
-                                        return None;
-                                    }
-                                    tracing::info!(
-                                        "[OMEMO decrypt] libsignal prekey decrypt failed ({}, pq={}): {:?}",
-                                        label,
-                                        pq_label,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Some peers/devices (including self-loop cases) can mark the slot as
-                // prekey while carrying bytes that libsignal accepts only as a normal
-                // SignalMessage. Try this fallback before vodo conversion.
-                let mut normal_candidates: Vec<Vec<u8>> = Vec::new();
-                normal_candidates.push(key_slot.data.clone());
-                if let Some(r) = rewrite_signalish_normal_for_vodo_strict(&key_slot.data) {
-                    normal_candidates.push(r);
-                }
-                let remote =
-                    ProtocolAddress::new(from_bare.to_string(), DeviceId::from(msg.header.sid));
-                for raw in normal_candidates {
-                    if let Ok(sig_msg) =
-                        wa_rs_libsignal::protocol::SignalMessage::try_from(raw.as_slice())
-                    {
-                        for (label, store) in [
-                            ("current", base_store.clone()),
-                            (
-                                "previous-fallback",
-                                self.signal_store_prev
-                                    .clone()
-                                    .unwrap_or_else(|| base_store.clone()),
-                            ),
-                        ] {
-                            let mut session_store = store.clone();
-                            let mut identity_store = store.clone();
-                            let mut csprng = rand09::rngs::StdRng::from_os_rng();
-                            match futures::executor::block_on(message_decrypt_signal(
-                                &sig_msg,
-                                &remote,
-                                &mut session_store,
-                                &mut identity_store,
-                                &mut csprng,
-                            )) {
-                                Ok(pt) => {
-                                    tracing::info!(
-                                        "[OMEMO decrypt] libsignal normal fallback on kex=true succeeded ({}) len={}",
-                                        label,
-                                        pt.len()
-                                    );
-                                    self.signal_store = Some(session_store);
-                                    let payload = msg.payload.as_ref()?;
-                                    if pt.len() == 32 {
-                                        let iv = msg.header.iv.as_ref()?;
-                                        if iv.len() != 12 {
-                                            return None;
-                                        }
-                                        let key: [u8; 16] = pt[..16].try_into().ok()?;
-                                        let tag: [u8; 16] = pt[16..32].try_into().ok()?;
-                                        let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                                        let body = crypto::decrypt_payload_v0_conversations(
-                                            payload, &key, &tag, &nonce,
-                                        )?;
-                                        return String::from_utf8(body).ok();
-                                    } else if pt.len() == 48 {
-                                        let key: [u8; 32] = pt[..32].try_into().ok()?;
-                                        let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                        let body =
-                                            crypto::decrypt_payload_v0(payload, &key, &hmac)?;
-                                        return String::from_utf8(body).ok();
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::info!(
-                                        "[OMEMO decrypt] libsignal normal fallback on kex=true failed ({}): {:?}",
-                                        label,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             let local_otk_by_id: HashMap<u32, Curve25519PublicKey> = self
                 .account
                 .all_stored_one_time_keys()
@@ -1519,236 +1089,6 @@ impl OmemoManager {
             }
             return None;
         } else {
-            // Try libsignal normal-message decrypt first for Conversations-style
-            // kex=false slots.
-            if let Some(base_store) = self.signal_store.clone() {
-                // Candidate 1: raw slot as SignalMessage
-                // Candidate 2: strict-rewritten slot (version/message framing normalized)
-                let mut sig_candidates: Vec<Vec<u8>> = Vec::new();
-                sig_candidates.push(key_slot.data.clone());
-                if let Some(r) = rewrite_signalish_normal_for_vodo_strict(&key_slot.data) {
-                    sig_candidates.push(r);
-                }
-                let remote =
-                    ProtocolAddress::new(from_bare.to_string(), DeviceId::from(msg.header.sid));
-                for raw in sig_candidates {
-                    if let Ok(sig_msg) =
-                        wa_rs_libsignal::protocol::SignalMessage::try_from(raw.as_slice())
-                    {
-                        for (label, store) in [
-                            ("current", base_store.clone()),
-                            (
-                                "previous-fallback",
-                                self.signal_store_prev
-                                    .clone()
-                                    .unwrap_or_else(|| base_store.clone()),
-                            ),
-                        ] {
-                            let mut session_store = store.clone();
-                            let mut identity_store = store.clone();
-                            let mut csprng = rand09::rngs::StdRng::from_os_rng();
-                            match futures::executor::block_on(message_decrypt_signal(
-                                &sig_msg,
-                                &remote,
-                                &mut session_store,
-                                &mut identity_store,
-                                &mut csprng,
-                            )) {
-                                Ok(pt) => {
-                                    tracing::info!(
-                                        "[OMEMO decrypt] libsignal normal decrypt succeeded ({}) len={}",
-                                        label,
-                                        pt.len()
-                                    );
-                                    self.signal_store = Some(session_store);
-                                    let payload = msg.payload.as_ref()?;
-                                    if pt.len() == 32 {
-                                        let iv = msg.header.iv.as_ref()?;
-                                        if iv.len() != 12 {
-                                            return None;
-                                        }
-                                        let key: [u8; 16] = pt[..16].try_into().ok()?;
-                                        let tag: [u8; 16] = pt[16..32].try_into().ok()?;
-                                        let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                                        let body = crypto::decrypt_payload_v0_conversations(
-                                            payload, &key, &tag, &nonce,
-                                        )?;
-                                        return String::from_utf8(body).ok();
-                                    } else if pt.len() == 48 {
-                                        let key: [u8; 32] = pt[..32].try_into().ok()?;
-                                        let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                        let body =
-                                            crypto::decrypt_payload_v0(payload, &key, &hmac)?;
-                                        return String::from_utf8(body).ok();
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::info!(
-                                        "[OMEMO decrypt] libsignal normal decrypt failed ({}): {:?}",
-                                        label,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Recovery path: some peers may send a prekey-formatted payload while
-                // marking kex=false. Try prekey decrypt against both raw and strict-rewritten
-                // bytes to recover session state.
-                let mut prekey_candidates: Vec<Vec<u8>> = Vec::new();
-                prekey_candidates.push(key_slot.data.clone());
-                if let Some(r) = rewrite_signalish_normal_for_vodo_strict(&key_slot.data) {
-                    prekey_candidates.push(r);
-                }
-                for raw in prekey_candidates {
-                    if let Ok(prekey_msg) = PreKeySignalMessage::try_from(raw.as_slice()) {
-                        for (label, store) in [
-                            ("current", base_store.clone()),
-                            (
-                                "previous-fallback",
-                                self.signal_store_prev
-                                    .clone()
-                                    .unwrap_or_else(|| base_store.clone()),
-                            ),
-                        ] {
-                            for use_pq in [UsePQRatchet::No, UsePQRatchet::Yes] {
-                                let pq_label = match use_pq {
-                                    UsePQRatchet::No => "no",
-                                    UsePQRatchet::Yes => "yes",
-                                };
-                                let mut session_store = store.clone();
-                                let mut identity_store = store.clone();
-                                let mut prekey_store = store.clone();
-                                let signed_prekey_store = store.clone();
-                                let mut csprng = rand09::rngs::StdRng::from_os_rng();
-                                match futures::executor::block_on(message_decrypt_prekey(
-                                    &prekey_msg,
-                                    &remote,
-                                    &mut session_store,
-                                    &mut identity_store,
-                                    &mut prekey_store,
-                                    &signed_prekey_store,
-                                    &mut csprng,
-                                    use_pq,
-                                )) {
-                                    Ok(pt) => {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] libsignal prekey-recovery succeeded ({}, pq={}) len={}",
-                                            label,
-                                            pq_label,
-                                            pt.len()
-                                        );
-                                        self.signal_store = Some(session_store);
-                                        let payload = msg.payload.as_ref()?;
-                                        if pt.len() == 32 {
-                                            let iv = msg.header.iv.as_ref()?;
-                                            if iv.len() != 12 {
-                                                return None;
-                                            }
-                                            let key: [u8; 16] = pt[..16].try_into().ok()?;
-                                            let tag: [u8; 16] = pt[16..32].try_into().ok()?;
-                                            let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                                            let body = crypto::decrypt_payload_v0_conversations(
-                                                payload, &key, &tag, &nonce,
-                                            )?;
-                                            return String::from_utf8(body).ok();
-                                        } else if pt.len() == 48 {
-                                            let key: [u8; 32] = pt[..32].try_into().ok()?;
-                                            let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                            let body =
-                                                crypto::decrypt_payload_v0(payload, &key, &hmac)?;
-                                            return String::from_utf8(body).ok();
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] libsignal prekey-recovery failed ({}, pq={}): {:?}",
-                                            label,
-                                            pq_label,
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if from_addr != from_bare {
-                    let remote_full =
-                        ProtocolAddress::new(from_addr.clone(), DeviceId::from(msg.header.sid));
-                    let mut sig_candidates_full: Vec<Vec<u8>> = Vec::new();
-                    sig_candidates_full.push(key_slot.data.clone());
-                    if let Some(r) = rewrite_signalish_normal_for_vodo_strict(&key_slot.data) {
-                        sig_candidates_full.push(r);
-                    }
-                    for raw in sig_candidates_full {
-                        if let Ok(sig_msg) =
-                            wa_rs_libsignal::protocol::SignalMessage::try_from(raw.as_slice())
-                        {
-                            for (label, store) in [
-                                ("current", base_store.clone()),
-                                (
-                                    "previous-fallback",
-                                    self.signal_store_prev
-                                        .clone()
-                                        .unwrap_or_else(|| base_store.clone()),
-                                ),
-                            ] {
-                                let mut session_store = store.clone();
-                                let mut identity_store = store.clone();
-                                let mut csprng = rand09::rngs::StdRng::from_os_rng();
-                                match futures::executor::block_on(message_decrypt_signal(
-                                    &sig_msg,
-                                    &remote_full,
-                                    &mut session_store,
-                                    &mut identity_store,
-                                    &mut csprng,
-                                )) {
-                                    Ok(pt) => {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] libsignal normal decrypt succeeded ({}, remote=full) len={}",
-                                            label,
-                                            pt.len()
-                                        );
-                                        self.signal_store = Some(session_store);
-                                        let payload = msg.payload.as_ref()?;
-                                        if pt.len() == 32 {
-                                            let iv = msg.header.iv.as_ref()?;
-                                            if iv.len() != 12 {
-                                                return None;
-                                            }
-                                            let key: [u8; 16] = pt[..16].try_into().ok()?;
-                                            let tag: [u8; 16] = pt[16..32].try_into().ok()?;
-                                            let nonce: [u8; 12] = iv[..12].try_into().ok()?;
-                                            let body = crypto::decrypt_payload_v0_conversations(
-                                                payload, &key, &tag, &nonce,
-                                            )?;
-                                            return String::from_utf8(body).ok();
-                                        } else if pt.len() == 48 {
-                                            let key: [u8; 32] = pt[..32].try_into().ok()?;
-                                            let hmac: [u8; 16] = pt[32..48].try_into().ok()?;
-                                            let body =
-                                                crypto::decrypt_payload_v0(payload, &key, &hmac)?;
-                                            return String::from_utf8(body).ok();
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::info!(
-                                            "[OMEMO decrypt] libsignal normal decrypt failed ({}, remote=full): {:?}",
-                                            label,
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             let maybe_session = if let Some(m) = self.sessions.get_mut(&from_addr) {
                 m.get_mut(&msg.header.sid)
             } else {

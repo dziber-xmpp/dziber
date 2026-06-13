@@ -61,32 +61,6 @@ pub fn load_omemo_pickle_key() -> Result<Option<[u8; 32]>, Box<dyn std::error::E
     Ok(Some(key))
 }
 
-pub fn save_signal_sessions_blob(
-    sessions: &HashMap<String, Vec<u8>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = establish_connection();
-    let json = serde_json::to_vec(sessions)?;
-    let row = DbOmemoKey { id: 2, key: json };
-    diesel::delete(omemo_key::table.filter(omemo_key::id.eq(2))).execute(&mut conn)?;
-    diesel::insert_into(omemo_key::table)
-        .values(&row)
-        .execute(&mut conn)?;
-    Ok(())
-}
-
-pub fn load_signal_sessions_blob() -> Result<HashMap<String, Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut conn = establish_connection();
-    let row: Option<DbOmemoKey> = omemo_key::table
-        .filter(omemo_key::id.eq(2))
-        .first(&mut conn)
-        .optional()?;
-    let Some(row) = row else {
-        return Ok(HashMap::new());
-    };
-    let map = serde_json::from_slice::<HashMap<String, Vec<u8>>>(&row.key).unwrap_or_default();
-    Ok(map)
-}
-
 pub fn load_omemo_account(
     key: &[u8; 32],
 ) -> Result<Option<OmemoAccount>, Box<dyn std::error::Error>> {

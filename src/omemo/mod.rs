@@ -5,7 +5,6 @@ pub mod device;
 pub mod manager;
 pub mod message;
 pub mod session;
-pub mod signal_store;
 pub mod store;
 pub mod trust;
 

@@ -141,32 +141,6 @@ impl OmemoAccount {
         None
     }
 
-    pub fn all_stored_fallback_secret_keys(&self) -> Vec<(u32, [u8; 32])> {
-        let pickle = self.inner.pickle();
-        let json = match serde_json::to_value(&pickle) {
-            Ok(v) => v,
-            Err(_) => return Vec::new(),
-        };
-        let mut out = Vec::new();
-        for obj in [
-            &json["fallback_keys"]["fallback_key"],
-            &json["fallback_keys"]["previous_fallback_key"],
-        ] {
-            let id = match Self::key_id_value_to_u32(&obj["key_id"]) {
-                Some(v) => v,
-                None => continue,
-            };
-            let sec = match Self::parse_u8_array_32(&obj["key"]) {
-                Some(v) => v,
-                None => continue,
-            };
-            if !out.iter().any(|(existing, _)| *existing == id) {
-                out.push((id, sec));
-            }
-        }
-        out
-    }
-
     pub fn generate(device_id: u32) -> Self {
         let mut inner = Account::new();
         inner.generate_one_time_keys(100);
@@ -198,20 +172,6 @@ impl OmemoAccount {
             }
         }
         out
-    }
-
-    pub fn identity_secret_key_bytes(&self) -> Option<[u8; 32]> {
-        let pickle = self.inner.pickle();
-        let json = serde_json::to_value(&pickle).ok()?;
-        let arr = json["diffie_hellman_key"].as_array()?;
-        if arr.len() != 32 {
-            return None;
-        }
-        let mut out = [0u8; 32];
-        for (i, v) in arr.iter().enumerate().take(32) {
-            out[i] = u8::try_from(v.as_u64()?).ok()?;
-        }
-        Some(out)
     }
 
     /// Sign data with the Curve25519 identity key using XEdDSA.
