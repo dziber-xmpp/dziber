@@ -286,3 +286,111 @@ pub struct DbTask {
     pub completed: Option<NaiveDateTime>,
     pub raw_ics: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+
+    use crate::models::message::{Direction, Message, MessageStatus};
+
+    use super::DbMessage;
+
+    fn fixed_timestamp() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2024-07-21T14:32:10.123456789Z")
+            .unwrap()
+            .to_utc()
+    }
+
+    fn sample_message(status: MessageStatus, direction: Direction) -> Message {
+        Message {
+            id: "msg-1".to_string(),
+            from: "from@example.com".to_string(),
+            body: "Hello, world!".to_string(),
+            timestamp: fixed_timestamp(),
+            status,
+            direction,
+        }
+    }
+
+    fn status_str(status: &MessageStatus) -> &'static str {
+        match status {
+            MessageStatus::Pending => "pending",
+            MessageStatus::Sent => "sent",
+            MessageStatus::Delivered => "delivered",
+            MessageStatus::Received => "received",
+            MessageStatus::Error => "error",
+        }
+    }
+
+    fn direction_str(direction: &Direction) -> &'static str {
+        match direction {
+            Direction::Incoming => "incoming",
+            Direction::Outgoing => "outgoing",
+        }
+    }
+
+    #[test]
+    fn db_message_roundtrip_all_status_and_direction_variants() {
+        let statuses = [
+            MessageStatus::Pending,
+            MessageStatus::Sent,
+            MessageStatus::Delivered,
+            MessageStatus::Received,
+            MessageStatus::Error,
+        ];
+        let directions = [Direction::Incoming, Direction::Outgoing];
+
+        for status in &statuses {
+            for direction in &directions {
+                let original = sample_message(status.clone(), direction.clone());
+                let db = DbMessage::from_message(&original, "acc@example.com", "contact@example.com");
+
+                assert_eq!(db.id, original.id);
+                assert_eq!(db.account_jid, "acc@example.com");
+                assert_eq!(db.contact_jid, "contact@example.com");
+                assert_eq!(db.from_jid, original.from);
+                assert_eq!(db.body, original.body);
+                assert_eq!(db.timestamp, original.timestamp.naive_utc());
+                assert_eq!(db.status, status_str(status));
+                assert_eq!(db.direction, direction_str(direction));
+
+                let round_trip = db.to_message();
+                assert_eq!(original, round_trip);
+            }
+        }
+    }
+
+    #[test]
+    fn db_message_unknown_status_defaults_to_pending() {
+        let db = DbMessage {
+            id: "msg-unknown".to_string(),
+            account_jid: "acc@example.com".to_string(),
+            contact_jid: "contact@example.com".to_string(),
+            from_jid: "from@example.com".to_string(),
+            body: "body".to_string(),
+            timestamp: fixed_timestamp().naive_utc(),
+            status: "bogus".to_string(),
+            direction: "outgoing".to_string(),
+        };
+        let msg = db.to_message();
+        assert_eq!(msg.status, MessageStatus::Pending);
+        assert_eq!(msg.direction, Direction::Outgoing);
+    }
+
+    #[test]
+    fn db_message_unknown_direction_defaults_to_incoming() {
+        let db = DbMessage {
+            id: "msg-unknown".to_string(),
+            account_jid: "acc@example.com".to_string(),
+            contact_jid: "contact@example.com".to_string(),
+            from_jid: "from@example.com".to_string(),
+            body: "body".to_string(),
+            timestamp: fixed_timestamp().naive_utc(),
+            status: "sent".to_string(),
+            direction: "sideways".to_string(),
+        };
+        let msg = db.to_message();
+        assert_eq!(msg.status, MessageStatus::Sent);
+        assert_eq!(msg.direction, Direction::Incoming);
+    }
+}

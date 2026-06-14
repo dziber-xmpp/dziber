@@ -22,14 +22,15 @@ use chrono::{DateTime, Utc};
 
 use crate::models::contact::{Contact, Presence, Show, Subscription};
 use crate::models::message::{Direction, Message, MessageStatus};
-use crate::omemo::OmemoManager;
-use crate::omemo::bundle::{Bundle, build_bundle_element_v0 as build_bundle_element, parse_bundle};
-use crate::omemo::device::{
+use dziber_omemo::{NS_OMEMO_V0, NS_OMEMO_V0_BUNDLES, NS_OMEMO_V0_DEVICES, OmemoManager};
+use dziber_omemo::bundle::{build_bundle_element_v0 as build_bundle_element, parse_bundle};
+use dziber_omemo::device::{
     Device, build_device_list_element_v0 as build_device_list_element, parse_device_list,
 };
-use crate::omemo::message::{build_message_stanza, parse_encrypted_message};
-use crate::omemo::{NS_OMEMO_V0, NS_OMEMO_V0_BUNDLES, NS_OMEMO_V0_DEVICES};
-use vodozemac::{Curve25519PublicKey, Curve25519SecretKey};
+use dziber_omemo::message::{
+    build_message_stanza, parse_encrypted_message, EncryptedMessage as OmemoEncryptedMessage,
+};
+
 
 const NS_CARBONS: &str = "urn:xmpp:carbons:2";
 const NS_FORWARD: &str = "urn:xmpp:forward:0";
@@ -78,6 +79,7 @@ pub enum XmppCommand {
         to: String,
         replace_id: String,
         body: String,
+        omemo: bool,
     },
     SendChatState {
         to: String,
@@ -115,6 +117,7 @@ pub enum XmppCommand {
     SendFile {
         to: String,
         path: String,
+        omemo: bool,
     },
     FetchDeviceList {
         jid: String,
@@ -172,11 +175,23 @@ pub enum XmppEvent {
         reason: String,
     },
     StatusChanged(String),
-    BundleReceived,
+    BundleReceived {
+        jid: String,
+        device_id: u32,
+    },
+    OmemoReady {
+        device_id: u32,
+    },
+    DeviceListUpdated {
+        jid: String,
+        devices: Vec<u32>,
+    },
     OmemoMessageReceived {
+        id: String,
         from: String,
         body: String,
         direction: Direction,
+        replace_id: Option<String>,
     },
     AvatarReceived {
         jid: String,
@@ -231,7 +246,10 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let _ = output.send(XmppEvent::StatusChanged("Online".to_string())).await;
 
                                 // Initialize OMEMO
-                                let mut mgr = OmemoManager::load_or_generate(rand::random());
+                                let mut mgr = OmemoManager::load_or_generate(
+                                    rand::random(),
+                                    Box::new(crate::db::omemo::DziberOmemoStore),
+                                );
                                 mgr.set_our_jid(&bound_jid.to_bare().to_string());
                                 let _device_id = mgr.our_device_id();
 
@@ -269,6 +287,10 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                     tracing::info!("[OMEMO] Bundle publish (v0) skipped: no fallback key");
                                 }
                                 let _ = mgr.save();
+                                let device_id = mgr.our_device_id();
+                                let _ = output
+                                    .send(XmppEvent::OmemoReady { device_id })
+                                    .await;
                                 omemo = Some(mgr);
 
                                 // Fetch our own device list for multi-device / carbon support
@@ -372,14 +394,12 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                     match mgr.encrypt_message(&to, &body) {
                                         Some(encrypted) => {
                                             tracing::info!("[SEND] OMEMO encrypt ok for {}", to);
-                                            let msg = build_message_stanza(
+                                            let msg = build_omemo_xmpp_message(
                                                 &to,
                                                 &encrypted,
                                                 &id,
+                                                None,
                                             );
-                                            if let Some(xml) = xmpp_message_to_xml(&msg) {
-                                                tracing::info!("[SEND XML] {}", xml);
-                                            }
                                             let _ = safe_send_stanza(
                                                 c,
                                                 msg.into(),
@@ -410,7 +430,55 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 to,
                                 replace_id,
                                 body,
+                                omemo: use_omemo,
                             }) => {
+                                if let Some(ref mut mgr) = omemo
+                                    && use_omemo
+                                {
+                                    match mgr.encrypt_message(&to, &body) {
+                                        Some(encrypted) => {
+                                            tracing::info!(
+                                                "[SEND] OMEMO correction encrypt ok for {}",
+                                                to
+                                            );
+                                            let mut msg = build_omemo_xmpp_message(
+                                                &to,
+                                                &encrypted,
+                                                &id,
+                                                Some(&body),
+                                            );
+                                            msg.payloads.push(
+                                                Element::builder("replace", NS_MESSAGE_CORRECT)
+                                                    .attr(
+                                                        "id".try_into().expect("valid attr"),
+                                                        replace_id.clone(),
+                                                    )
+                                                    .build(),
+                                            );
+                                            let _ = safe_send_stanza(
+                                                c,
+                                                msg.into(),
+                                                "worker-loop",
+                                                &mut stream_healthy,
+                                            )
+                                            .await;
+                                            tracing::info!(
+                                                "[SEND] OMEMO correction stanza dispatched to {}",
+                                                to
+                                            );
+                                            let _ = output
+                                                .send(XmppEvent::MessageSent { _id: id })
+                                                .await;
+                                            continue;
+                                        }
+                                        None => {
+                                            tracing::info!(
+                                                "[SEND] OMEMO correction encrypt failed for {}",
+                                                to
+                                            );
+                                        }
+                                    }
+                                }
                                 let msg = make_correction_message(&to, &body, &id, &replace_id);
                                 let _ = safe_send_stanza(
                                     c,
@@ -590,7 +658,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                 let iq = build_jingle_session_info_ringing_iq(&with, &sid, our_jid.as_deref());
                                 let _ = safe_send_stanza(c, iq.into(), "worker-loop", &mut stream_healthy).await;
                             }
-                            Some(XmppCommand::SendFile { to, path }) => {
+                            Some(XmppCommand::SendFile { to, path, omemo }) => {
                                 let file_path = PathBuf::from(path.clone());
                                 let Some(filename) = file_path.file_name().and_then(|n| n.to_str()).map(ToOwned::to_owned) else {
                                     let _ = output.send(XmppEvent::StatusChanged("File send failed: invalid file path".to_string())).await;
@@ -638,6 +706,7 @@ pub fn run_xmpp_worker() -> impl Stream<Item = XmppEvent> {
                                         content_type,
                                         services,
                                         service_idx: 0,
+                                        omemo,
                                     },
                                 );
                                 let _ = output.send(XmppEvent::StatusChanged("Uploading file...".to_string())).await;
@@ -870,6 +939,7 @@ enum PendingIq {
         content_type: String,
         services: Vec<String>,
         service_idx: usize,
+        omemo: bool,
     },
 }
 
@@ -906,11 +976,37 @@ fn extract_carbon_message(msg: &XmppMessage) -> Option<(CarbonType, XmppMessage)
     None
 }
 
-fn xmpp_message_to_xml(msg: &XmppMessage) -> Option<String> {
-    let el: Element = msg.clone().into();
+fn element_to_xml(el: &Element) -> Option<String> {
     let mut bytes = Vec::new();
     el.write_to(&mut bytes).ok()?;
     String::from_utf8(bytes).ok()
+}
+
+fn xmpp_message_to_xml(msg: &XmppMessage) -> Option<String> {
+    let el: Element = msg.clone().into();
+    element_to_xml(&el)
+}
+
+fn build_omemo_xmpp_message(
+    to: &str,
+    encrypted: &OmemoEncryptedMessage,
+    id: &str,
+    fallback_body: Option<&str>,
+) -> XmppMessage {
+    let element = build_message_stanza(to, encrypted, id, fallback_body);
+    if let Some(xml) = element_to_xml(&element) {
+        tracing::info!("[SEND XML] {}", xml);
+    }
+    element.try_into().unwrap_or_else(|_| {
+        tracing::warn!(
+            "[SEND] invalid JID in OMEMO message ({}), falling back to invalid@localhost",
+            to
+        );
+        let fallback = build_message_stanza("invalid@localhost", encrypted, id, fallback_body);
+        fallback
+            .try_into()
+            .expect("fallback OMEMO message element is a valid XMPP message")
+    })
 }
 
 fn build_carbons_enable_iq() -> Iq {
@@ -1397,11 +1493,21 @@ async fn process_message(
     }
 
     if let Some(body) = omemo_decrypted {
+        let stable_id = stable_id();
+        let replace_id = msg.payloads.iter().find_map(|p| {
+            if p.name() == "replace" && p.ns() == NS_MESSAGE_CORRECT {
+                p.attr("id").map(|v| v.to_string())
+            } else {
+                None
+            }
+        });
         let _ = output
             .send(XmppEvent::OmemoMessageReceived {
+                id: stable_id,
                 from: from_bare,
                 body,
                 direction,
+                replace_id,
             })
             .await;
         return;
@@ -1488,6 +1594,53 @@ async fn handle_stanza(
             tracing::info!("[MSG RAW] {:?}", msg);
             if let Some(xml) = xmpp_message_to_xml(&msg) {
                 tracing::info!("[MSG XML] {}", xml);
+            }
+
+            // Handle live PEP device-list updates (own or contact).
+            if let Some(event) = msg.payloads.iter().find(|p| {
+                p.name() == "event" && p.ns() == "http://jabber.org/protocol/pubsub#event"
+            }) {
+                if let Some(items) = event.get_child("items", "http://jabber.org/protocol/pubsub#event")
+                {
+                    if items
+                        .attr("node")
+                        .map(|n| n.contains("devicelist"))
+                        .unwrap_or(false)
+                    {
+                        if let Some(item) =
+                            items.get_child("item", "http://jabber.org/protocol/pubsub#event")
+                        {
+                            if let Some(list_el) = item.get_child("list", NS_OMEMO_V0) {
+                                if let Some(device_list) = parse_device_list(list_el) {
+                                    let devices: Vec<u32> =
+                                        device_list.devices.iter().map(|d| d.id).collect();
+                                    // PEP device-list notifications come from the account that
+                                    // owns the list, so use msg.from (not msg.to).
+                                    let list_jid = msg
+                                        .from
+                                        .as_ref()
+                                        .map(|j| j.to_bare().to_string())
+                                        .or_else(|| our_jid.map(|j| j.split('/').next().unwrap_or(j).to_string()))
+                                        .unwrap_or_default();
+                                    tracing::info!(
+                                        "[OMEMO] Live device list update for {}: {:?}",
+                                        list_jid,
+                                        devices
+                                    );
+                                    if let Some(mgr) = omemo {
+                                        mgr.update_device_list(&list_jid, devices.clone());
+                                        let _ = output
+                                            .send(XmppEvent::DeviceListUpdated {
+                                                jid: list_jid,
+                                                devices: devices.clone(),
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if let Some(received_id) = extract_received_receipt_id(&msg) {
@@ -1687,6 +1840,7 @@ async fn handle_stanza(
                                 content_type,
                                 services: _services,
                                 service_idx: _service_idx,
+                                omemo: use_omemo,
                             } => {
                                 let Some(element) = payload else {
                                     let _ = output.send(XmppEvent::StatusChanged("File send failed: upload slot response missing payload".to_string())).await;
@@ -1700,10 +1854,31 @@ async fn handle_stanza(
                                 };
                                 match upload_file_to_slot(&put_url, &path, &content_type, &headers).await {
                                     Ok(()) => {
-                                        let msg = make_file_message(&to, &filename, &get_url);
+                                        let file_body = format!("📎 {}\n{}", filename, get_url);
+                                        let sent_msg = if let Some(mgr) = omemo
+                                            && use_omemo
+                                        {
+                                            match mgr.encrypt_message(&to, &file_body) {
+                                                Some(encrypted) => {
+                                                    tracing::info!("[SEND] OMEMO file encrypt ok for {}", to);
+                                                    build_omemo_xmpp_message(
+                                                        &to,
+                                                        &encrypted,
+                                                        &uuid::Uuid::new_v4().to_string(),
+                                                        Some(&file_body),
+                                                    )
+                                                }
+                                                None => {
+                                                    tracing::info!("[SEND] OMEMO file encrypt failed for {}; sending plaintext", to);
+                                                    make_file_message(&to, &filename, &get_url)
+                                                }
+                                            }
+                                        } else {
+                                            make_file_message(&to, &filename, &get_url)
+                                        };
                                         let _ = safe_send_stanza(
                                             client,
-                                            msg.into(),
+                                            sent_msg.into(),
                                             "http-upload-send-message",
                                             stream_healthy,
                                         )
@@ -1743,6 +1918,17 @@ async fn handle_stanza(
                                                     .as_ref()
                                                     .and_then(|id| id.0.parse().ok())
                                                     .unwrap_or(0);
+                                                // v0 bundles use item id "current", which would
+                                                // parse as 0. We can't know the real device id here,
+                                                // so let the per-device fetch create the session.
+                                                if device_id == 0 {
+                                                    tracing::info!(
+                                                        "[OMEMO] Generic bundle response for {} has item id '{}' (device id 0); skipping, will use per-device fetch",
+                                                        jid,
+                                                        item.id.as_ref().map(|id| id.0.as_str()).unwrap_or("(none)")
+                                                    );
+                                                    continue;
+                                                }
                                                 if let Some(ref payload) = item.payload {
                                                     if let Some(bundle) = parse_bundle(payload) {
                                                         tracing::info!(
@@ -1763,7 +1949,10 @@ async fn handle_stanza(
                                                             }
                                                         }
                                                         let _ = output
-                                                            .send(XmppEvent::BundleReceived)
+                                                            .send(XmppEvent::BundleReceived {
+                                                                jid: jid.clone(),
+                                                                device_id,
+                                                            })
                                                             .await;
                                                         found_any = true;
                                                         found_device_ids.push(device_id);
@@ -1916,7 +2105,10 @@ async fn handle_stanza(
                                                             let _ = mgr.save();
                                                         }
                                                         let _ = output
-                                                            .send(XmppEvent::BundleReceived)
+                                                            .send(XmppEvent::BundleReceived {
+                                                                jid: jid.clone(),
+                                                                device_id,
+                                                            })
                                                             .await;
                                                     } else {
                                                         tracing::info!(
@@ -2172,6 +2364,12 @@ async fn handle_stanza(
                                                 }
                                             }
                                             mgr.update_device_list(&jid, all_devices.clone());
+                                            let _ = output
+                                                .send(XmppEvent::DeviceListUpdated {
+                                                    jid: jid.clone(),
+                                                    devices: all_devices.clone(),
+                                                })
+                                                .await;
                                             let iq = build_bundle_fetch_iq(&jid, OmemoVersion::V0);
                                             let bundle_id = match &iq {
                                                 Iq::Get { id, .. } | Iq::Set { id, .. } => {
@@ -2217,7 +2415,13 @@ async fn handle_stanza(
                                             all_devices
                                         );
                                         if let Some(mgr) = omemo {
-                                            mgr.update_device_list(&jid, all_devices);
+                                            mgr.update_device_list(&jid, all_devices.clone());
+                                            let _ = output
+                                                .send(XmppEvent::DeviceListUpdated {
+                                                    jid: jid.clone(),
+                                                    devices: all_devices.clone(),
+                                                })
+                                                .await;
                                             let iq = build_bundle_fetch_iq(&jid, OmemoVersion::V0);
                                             let bundle_id = match &iq {
                                                 Iq::Get { id, .. } | Iq::Set { id, .. } => {
@@ -3068,6 +3272,7 @@ async fn handle_stanza(
                                 content_type,
                                 services,
                                 service_idx,
+                                omemo,
                             } => {
                                 let next_idx = service_idx + 1;
                                 if next_idx < services.len() {
@@ -3093,6 +3298,7 @@ async fn handle_stanza(
                                                 content_type,
                                                 services,
                                                 service_idx: next_idx,
+                                                omemo,
                                             },
                                         );
                                         return;
@@ -3821,16 +4027,7 @@ fn build_purge_v0_device_list_iq(to: &Jid) -> Iq {
 }
 
 fn build_bundle_iq(mgr: &OmemoManager, to: &Jid) -> Option<Iq> {
-    let (spk_id, spk, spks, ik, prekeys) = build_bundle_material(mgr)?;
-
-    let bundle = Bundle {
-        device_id: mgr.our_device_id(),
-        spk_id,
-        spk,
-        spks,
-        ik,
-        prekeys,
-    };
+    let bundle = mgr.self_bundle()?;
     let bundle_el = build_bundle_element(&bundle);
     let item = xmpp_parsers::pubsub::pubsub::Item {
         id: Some(xmpp_parsers::pubsub::ItemId(
@@ -3864,16 +4061,7 @@ fn build_bundle_iq(mgr: &OmemoManager, to: &Jid) -> Option<Iq> {
 }
 
 fn build_bundle_iq_v0(mgr: &OmemoManager, to: &Jid) -> Option<Iq> {
-    let (spk_id, spk, spks, ik, prekeys) = build_bundle_material(mgr)?;
-
-    let bundle = Bundle {
-        device_id: mgr.our_device_id(),
-        spk_id,
-        spk,
-        spks,
-        ik,
-        prekeys,
-    };
+    let bundle = mgr.self_bundle()?;
     let bundle_el = build_bundle_element(&bundle);
     let item = xmpp_parsers::pubsub::pubsub::Item {
         id: Some(xmpp_parsers::pubsub::ItemId(String::from("current"))),
@@ -3911,40 +4099,6 @@ fn build_bundle_iq_v0(mgr: &OmemoManager, to: &Jid) -> Option<Iq> {
     let mut iq = Iq::from_set(format!("pub-bundle-v0-{}", to), pubsub);
     *iq.to_mut() = Some(to.clone());
     Some(iq)
-}
-
-type BundleMaterial = (u32, Vec<u8>, Vec<u8>, Vec<u8>, Vec<(u32, Vec<u8>)>);
-
-fn build_bundle_material(mgr: &OmemoManager) -> Option<BundleMaterial> {
-    // Signed pre-key is derived from fallback secret and keeps its actual key id.
-    // Reusing a fixed id across rotations can cause peers to cache stale SPKs.
-    let (fk_id, fk_secret) = mgr.account.fallback_secret_key_bytes()?;
-    let spk_secret = Curve25519SecretKey::from_slice(&fk_secret);
-    let spk_pub = Curve25519PublicKey::from(&spk_secret);
-    let spk = spk_pub.to_bytes().to_vec();
-    let spk_id: u32 = fk_id;
-    // Signal/Conversations expects the signed-prekey signature over the
-    // serialized Curve25519 public key (0x05 prefix + 32-byte key).
-    let mut spk_for_sig = Vec::with_capacity(33);
-    spk_for_sig.push(0x05);
-    spk_for_sig.extend_from_slice(&spk_pub.to_bytes());
-    let spks = mgr.account.xeddsa_sign(&spk_for_sig);
-
-    let ik = mgr.account.inner.curve25519_key().to_bytes().to_vec();
-
-    let mut keyed = mgr.account.all_stored_one_time_secret_keys();
-    keyed.sort_by_key(|(id, _)| *id);
-    let prekeys: Vec<(u32, Vec<u8>)> = keyed
-        .into_iter()
-        .take(100)
-        .map(|(orig_id, sk)| {
-            let sec = Curve25519SecretKey::from_slice(&sk);
-            let pk = Curve25519PublicKey::from(&sec);
-            (orig_id, pk.to_bytes().to_vec())
-        })
-        .collect();
-
-    Some((spk_id, spk, spks, ik, prekeys))
 }
 
 fn build_bundle_fetch_iq(jid: &str, version: OmemoVersion) -> Iq {
@@ -4032,4 +4186,546 @@ fn build_avatar_data_fetch_iq(jid: &str, hash: &str) -> Iq {
         *iq.to_mut() = Some(target);
     }
     iq
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn el_to_string(el: &Element) -> String {
+        let mut bytes = Vec::new();
+        el.write_to(&mut bytes).unwrap();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    fn iq_set_payload(iq: &Iq) -> &Element {
+        match iq {
+            Iq::Set { payload, .. } | Iq::Get { payload, .. } => payload,
+            _ => panic!("expected Get/Set IQ"),
+        }
+    }
+
+    #[test]
+    fn random_dziber_resource_format() {
+        let r = random_dziber_resource();
+        assert!(r.starts_with("dziber."));
+        assert_eq!(r.len(), 7 + 10);
+        assert!(r[7..].chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn extract_carbon_message_received() {
+        let inner = make_message("peer@example.com", "hello carbon", "mid");
+        let inner_el: Element = inner.into();
+        let forwarded = Element::builder("forwarded", NS_FORWARD)
+            .append(inner_el)
+            .build();
+        let received = Element::builder("received", NS_CARBONS)
+            .append(forwarded)
+            .build();
+        let mut msg = XmppMessage::new(None);
+        msg.payloads.push(received);
+
+        let (ct, fwd) = extract_carbon_message(&msg).unwrap();
+        assert_eq!(ct, CarbonType::Received);
+        assert_eq!(fwd.bodies.get("").map(|s| s.as_str()), Some("hello carbon"));
+    }
+
+    #[test]
+    fn extract_carbon_message_sent() {
+        let inner = make_message("peer@example.com", "sent msg", "mid");
+        let inner_el: Element = inner.into();
+        let forwarded = Element::builder("forwarded", NS_FORWARD)
+            .append(inner_el)
+            .build();
+        let sent = Element::builder("sent", NS_CARBONS)
+            .append(forwarded)
+            .build();
+        let mut msg = XmppMessage::new(None);
+        msg.payloads.push(sent);
+
+        let (ct, fwd) = extract_carbon_message(&msg).unwrap();
+        assert_eq!(ct, CarbonType::Sent);
+        assert_eq!(fwd.bodies.get("").map(|s| s.as_str()), Some("sent msg"));
+    }
+
+    #[test]
+    fn xmpp_message_to_xml_contains_body() {
+        let msg = make_message("peer@example.com", "hi there", "mid");
+        let xml = xmpp_message_to_xml(&msg).unwrap();
+        assert!(xml.contains("<message"));
+        assert!(xml.contains("hi there"));
+    }
+
+    #[test]
+    fn build_carbons_enable_iq_structure() {
+        let iq = build_carbons_enable_iq();
+        let Iq::Set { id, to, payload, .. } = iq else {
+            panic!("expected Set IQ");
+        };
+        assert_eq!(id, "carbons-enable");
+        assert!(to.is_none());
+        assert_eq!(payload.name(), "enable");
+        assert_eq!(payload.ns(), NS_CARBONS);
+    }
+
+    #[test]
+    fn build_bookmarks_fetch_iq_structure() {
+        let iq = build_bookmarks_fetch_iq();
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert_eq!(id, "bookmarks-get");
+        assert!(to.is_none());
+        assert_eq!(payload.name(), "query");
+        assert_eq!(payload.ns(), "jabber:iq:private");
+        let storage = payload.get_child("storage", "storage:bookmarks");
+        assert!(storage.is_some());
+    }
+
+    #[test]
+    fn build_jingle_session_initiate_iq_structure() {
+        let iq = build_jingle_session_initiate_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+        );
+        let payload = iq_set_payload(&iq);
+        assert_eq!(payload.name(), "jingle");
+        assert_eq!(payload.ns(), NS_JINGLE);
+        assert_eq!(payload.attr("action"), Some("session-initiate"));
+        assert_eq!(payload.attr("sid"), Some("sid1"));
+        assert_eq!(payload.attr("initiator"), Some("me@example.com/dziber"));
+    }
+
+    #[test]
+    fn build_jingle_session_accept_iq_structure() {
+        let iq = build_jingle_session_accept_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+        );
+        let payload = iq_set_payload(&iq);
+        assert_eq!(payload.attr("action"), Some("session-accept"));
+        assert_eq!(payload.attr("sid"), Some("sid1"));
+        assert_eq!(payload.attr("responder"), Some("me@example.com/dziber"));
+    }
+
+    #[test]
+    fn build_jingle_session_terminate_iq_structure() {
+        let iq = build_jingle_session_terminate_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+        );
+        let payload = iq_set_payload(&iq);
+        assert_eq!(payload.attr("action"), Some("session-terminate"));
+        let reason = payload.get_child("reason", NS_JINGLE).unwrap();
+        assert!(reason.get_child("success", NS_JINGLE).is_some());
+    }
+
+    #[test]
+    fn build_jingle_session_reject_iq_decline() {
+        let iq = build_jingle_session_reject_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+            CallRejectReason::Decline,
+        );
+        let payload = iq_set_payload(&iq);
+        let reason = payload.get_child("reason", NS_JINGLE).unwrap();
+        assert!(reason.get_child("decline", NS_JINGLE).is_some());
+    }
+
+    #[test]
+    fn build_jingle_session_reject_iq_busy() {
+        let iq = build_jingle_session_reject_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+            CallRejectReason::Busy,
+        );
+        let payload = iq_set_payload(&iq);
+        let reason = payload.get_child("reason", NS_JINGLE).unwrap();
+        assert!(reason.get_child("busy", NS_JINGLE).is_some());
+    }
+
+    #[test]
+    fn build_jingle_session_info_ringing_iq_structure() {
+        let iq = build_jingle_session_info_ringing_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+        );
+        let payload = iq_set_payload(&iq);
+        assert_eq!(payload.attr("action"), Some("session-info"));
+        assert!(payload.get_child("ringing", NS_JINGLE_RTP_INFO).is_some());
+    }
+
+    #[test]
+    fn parse_jingle_candidates_roundtrip() {
+        let candidates = vec![IceCandidate {
+            foundation: "1".to_string(),
+            component: 1,
+            protocol: "udp".to_string(),
+            priority: 2_130_706_431,
+            ip: "192.0.2.1".to_string(),
+            port: 5000,
+            typ: "host".to_string(),
+        }];
+        let iq = build_jingle_transport_info_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+            &candidates,
+        );
+        let payload = iq_set_payload(&iq);
+        let parsed = parse_jingle_candidates(payload);
+        assert_eq!(parsed.len(), 1);
+        let c = &parsed[0];
+        assert_eq!(c.foundation, "1");
+        assert_eq!(c.component, 1);
+        assert_eq!(c.protocol, "udp");
+        assert_eq!(c.priority, 2_130_706_431);
+        assert_eq!(c.ip, "192.0.2.1");
+        assert_eq!(c.port, 5000);
+        assert_eq!(c.typ, "host");
+    }
+
+    #[test]
+    fn build_jingle_transport_info_end_iq_structure() {
+        let iq = build_jingle_transport_info_end_iq(
+            "peer@example.com/resource",
+            "sid1",
+            Some("me@example.com/dziber"),
+        );
+        let payload = iq_set_payload(&iq);
+        let content = payload.get_child("content", NS_JINGLE).unwrap();
+        let transport = content.get_child("transport", NS_JINGLE_ICE).unwrap();
+        assert!(transport.get_child("end-of-candidates", NS_JINGLE_ICE).is_some());
+    }
+
+    #[test]
+    fn parse_jingle_terminate_reason_success() {
+        let jingle = Element::builder("jingle", NS_JINGLE)
+            .append(
+                Element::builder("reason", NS_JINGLE)
+                    .append(Element::builder("success", NS_JINGLE).build())
+                    .build(),
+            )
+            .build();
+        assert_eq!(parse_jingle_terminate_reason(&jingle), Some("success".to_string()));
+    }
+
+    #[test]
+    fn parse_jingle_terminate_reason_none() {
+        let jingle = Element::builder("jingle", NS_JINGLE).build();
+        assert_eq!(parse_jingle_terminate_reason(&jingle), None);
+    }
+
+    #[test]
+    fn build_iq_jingle_error_reply_out_of_order() {
+        let to = Jid::from_str("peer@example.com").ok();
+        let iq = build_iq_jingle_error_reply(to.clone(), "id1".to_string(), "out-of-order");
+        let Iq::Error { id, to: t, error, .. } = iq else {
+            panic!("expected Error IQ");
+        };
+        assert_eq!(id, "id1");
+        assert_eq!(t, to);
+        assert_eq!(error.defined_condition, DefinedCondition::UnexpectedRequest);
+        let other = error.other.as_ref().unwrap();
+        assert_eq!(other.name(), "error");
+        assert!(other
+            .get_child("out-of-order", "urn:xmpp:jingle:errors:1")
+            .is_some());
+    }
+
+    #[test]
+    fn build_iq_jingle_error_reply_unknown_session() {
+        let iq = build_iq_jingle_error_reply(None, "id2".to_string(), "unknown-session");
+        let Iq::Error { error, .. } = iq else {
+            panic!("expected Error IQ");
+        };
+        assert_eq!(error.defined_condition, DefinedCondition::ItemNotFound);
+        let other = error.other.as_ref().unwrap();
+        assert_eq!(other.name(), "error");
+        assert!(other
+            .get_child("unknown-session", "urn:xmpp:jingle:errors:1")
+            .is_some());
+    }
+
+    #[test]
+    fn build_iq_jingle_error_reply_default() {
+        let iq = build_iq_jingle_error_reply(None, "id3".to_string(), "unknown-kind");
+        let Iq::Error { error, .. } = iq else {
+            panic!("expected Error IQ");
+        };
+        assert_eq!(error.defined_condition, DefinedCondition::BadRequest);
+    }
+
+    #[test]
+    fn build_mam_query_iq_structure() {
+        let to = Jid::from_str("archive@example.com").ok();
+        let iq = build_mam_query_iq("mam-1", "q1", to.clone(), Some("before-id".to_string()));
+        let Iq::Set { id, to: t, payload, .. } = iq else {
+            panic!("expected Set IQ");
+        };
+        assert_eq!(id, "mam-1");
+        assert_eq!(t, to);
+        assert_eq!(payload.name(), "query");
+        let xml = el_to_string(&payload);
+        assert!(xml.contains("urn:xmpp:mam:2"));
+        assert!(xml.contains("before-id"));
+    }
+
+    #[test]
+    fn make_presence_sets_status_and_show() {
+        let p = make_presence();
+        assert_eq!(p.type_, PresenceType::None);
+        assert_eq!(p.show, Some(XmppShow::Chat));
+        assert_eq!(
+            p.statuses.get(&Lang::default()),
+            Some(&"Dziber XMPP".to_string())
+        );
+    }
+
+    #[test]
+    fn make_message_chat_requests_receipt() {
+        let m = make_message("user@example.com", "hello", "mid");
+        assert_eq!(m.type_, MessageType::Chat);
+        assert_eq!(m.bodies.get(""), Some(&"hello".to_string()));
+        assert!(m.payloads.iter().any(|p| p.name() == "request" && p.ns() == NS_RECEIPTS));
+    }
+
+    #[test]
+    fn make_message_groupchat_no_receipt() {
+        let m = make_message("room@conference.example.com", "hello", "mid");
+        assert_eq!(m.type_, MessageType::Groupchat);
+        assert!(!m.payloads.iter().any(|p| p.name() == "request"));
+    }
+
+    #[test]
+    fn make_file_message_body_contains_filename_and_url() {
+        let m = make_file_message("user@example.com", "photo.png", "https://get.example.com/x");
+        let body = m.bodies.get("").unwrap();
+        assert!(body.contains("photo.png"));
+        assert!(body.contains("https://get.example.com/x"));
+    }
+
+    #[test]
+    fn make_correction_message_includes_replace_payload() {
+        let m = make_correction_message("user@example.com", "fixed", "mid", "old-mid");
+        assert!(m.payloads.iter().any(|p| {
+            p.name() == "replace"
+                && p.ns() == NS_MESSAGE_CORRECT
+                && p.attr("id") == Some("old-mid")
+        }));
+        assert_eq!(m.bodies.get(""), Some(&"fixed".to_string()));
+    }
+
+    #[test]
+    fn make_chatstate_message_active_and_composing() {
+        let active = make_chatstate_message("user@example.com", ChatState::Active);
+        assert!(active.payloads.iter().any(|p| p.name() == "active" && p.ns() == NS_CHATSTATES));
+
+        let composing = make_chatstate_message("user@example.com", ChatState::Composing);
+        assert!(composing
+            .payloads
+            .iter()
+            .any(|p| p.name() == "composing" && p.ns() == NS_CHATSTATES));
+    }
+
+    #[test]
+    fn extract_received_receipt_id_finds_id() {
+        let mut m = XmppMessage::new(None);
+        m.payloads.push(
+            Element::builder("received", NS_RECEIPTS)
+                .attr("id".try_into().expect("valid attr"), "receipt-id")
+                .build(),
+        );
+        assert_eq!(extract_received_receipt_id(&m), Some("receipt-id".to_string()));
+    }
+
+    #[test]
+    fn extract_replace_id_finds_id() {
+        let mut m = XmppMessage::new(None);
+        m.payloads.push(
+            Element::builder("replace", NS_MESSAGE_CORRECT)
+                .attr("id".try_into().expect("valid attr"), "replace-id")
+                .build(),
+        );
+        assert_eq!(extract_replace_id(&m), Some("replace-id".to_string()));
+    }
+
+    #[test]
+    fn extract_chat_state_returns_known_states() {
+        for (name, expected) in [
+            ("active", Some("active")),
+            ("composing", Some("composing")),
+            ("paused", Some("paused")),
+            ("unknown", None),
+        ] {
+            let mut m = XmppMessage::new(None);
+            m.payloads.push(Element::builder(name, NS_CHATSTATES).build());
+            assert_eq!(extract_chat_state(&m), expected);
+        }
+    }
+
+    #[test]
+    fn looks_like_room_jid_detects_muc() {
+        assert!(looks_like_room_jid("room@conference.example.com"));
+        assert!(looks_like_room_jid("room@muc.example.com/nick"));
+        assert!(!looks_like_room_jid("user@example.com"));
+        assert!(!looks_like_room_jid("user@example.com/resource"));
+    }
+
+    #[test]
+    fn default_muc_nick_derives_from_jid() {
+        assert_eq!(default_muc_nick(Some("user@example.com/dziber")), "user");
+        assert_eq!(default_muc_nick(None), "dziber");
+    }
+
+    #[test]
+    fn build_muc_join_presence_structure() {
+        let p = build_muc_join_presence("room@conference.example.com", "nick").unwrap();
+        assert_eq!(p.to.as_ref().unwrap().to_string(), "room@conference.example.com/nick");
+        assert!(p.payloads.iter().any(|pl| {
+            pl.name() == "x" && pl.ns() == "http://jabber.org/protocol/muc"
+        }));
+    }
+
+    #[test]
+    fn guess_content_type_known_and_default() {
+        assert_eq!(guess_content_type(Path::new("image.PNG")), "image/png");
+        assert_eq!(guess_content_type(Path::new("doc.pdf")), "application/pdf");
+        assert_eq!(guess_content_type(Path::new("unknown.xyz")), "application/octet-stream");
+        assert_eq!(guess_content_type(Path::new("no_extension")), "application/octet-stream");
+    }
+
+    #[test]
+    fn candidate_upload_services_prefers_upload_subdomain() {
+        let services = candidate_upload_services("user@example.com/resource");
+        assert_eq!(services, vec!["upload.example.com", "example.com"]);
+    }
+
+    #[test]
+    fn parse_http_upload_slot_extracts_urls_and_headers() {
+        let slot = Element::builder("slot", "urn:xmpp:http:upload:0")
+            .append(
+                Element::builder("put", "urn:xmpp:http:upload:0")
+                    .attr("url".try_into().expect("valid attr"), "https://put.example.com/x")
+                    .append(
+                        Element::builder("header", "urn:xmpp:http:upload:0")
+                            .attr("name".try_into().expect("valid attr"), "Authorization")
+                            .append("Bearer token")
+                            .build(),
+                    )
+                    .build(),
+            )
+            .append(
+                Element::builder("get", "urn:xmpp:http:upload:0")
+                    .attr("url".try_into().expect("valid attr"), "https://get.example.com/x")
+                    .build(),
+            )
+            .build();
+        let (put, get, headers) = parse_http_upload_slot(&slot).unwrap();
+        assert_eq!(put, "https://put.example.com/x");
+        assert_eq!(get, "https://get.example.com/x");
+        assert_eq!(headers, vec![("Authorization".to_string(), "Bearer token".to_string())]);
+    }
+
+    #[test]
+    fn build_device_list_iq_is_pubsub_publish() {
+        let to = Jid::from_str("user@example.com").unwrap();
+        let iq = build_device_list_iq(&[1, 2, 3], &to);
+        let Iq::Set { id, to: t, payload, .. } = iq else {
+            panic!("expected Set IQ");
+        };
+        assert!(id.starts_with("pub-devices-"));
+        assert_eq!(t.as_ref(), Some(&to));
+        assert_eq!(payload.name(), "pubsub");
+        assert_eq!(payload.ns(), "http://jabber.org/protocol/pubsub");
+    }
+
+    #[test]
+    fn build_device_list_iq_v0_is_pubsub_publish() {
+        let to = Jid::from_str("user@example.com").unwrap();
+        let iq = build_device_list_iq_v0(&[4, 5], &to);
+        let Iq::Set { id, payload, .. } = iq else {
+            panic!("expected Set IQ");
+        };
+        assert!(id.starts_with("pub-devices-v0-"));
+        assert_eq!(payload.name(), "pubsub");
+    }
+
+    #[test]
+    fn build_device_list_fetch_iq_targets_jid() {
+        let iq = build_device_list_fetch_iq("user@example.com", OmemoVersion::V0);
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert!(id.contains("V0"));
+        assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
+        assert_eq!(payload.name(), "pubsub");
+    }
+
+    #[test]
+    fn build_bundle_fetch_iq_targets_jid() {
+        let iq = build_bundle_fetch_iq("user@example.com", OmemoVersion::V0);
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert!(id.contains("V0"));
+        assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
+        assert_eq!(payload.name(), "pubsub");
+    }
+
+    #[test]
+    fn build_bundle_fetch_iq_v0_includes_device_id() {
+        let iq = build_bundle_fetch_iq_v0("user@example.com", 42);
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert!(id.contains("42"));
+        assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
+        let items = payload.get_child("items", "http://jabber.org/protocol/pubsub").unwrap();
+        assert!(items.attr("node").unwrap().contains("42"));
+    }
+
+    #[test]
+    fn build_vcard_fetch_iq_targets_jid() {
+        let iq = build_vcard_fetch_iq("user@example.com");
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert_eq!(id, "vcard-user@example.com");
+        assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
+        assert_eq!(payload.name(), "vCard");
+    }
+
+    #[test]
+    fn build_avatar_metadata_fetch_iq_targets_jid() {
+        let iq = build_avatar_metadata_fetch_iq("user@example.com");
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert_eq!(id, "avatar-meta-user@example.com");
+        assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
+        let items = payload.get_child("items", "http://jabber.org/protocol/pubsub").unwrap();
+        assert_eq!(items.attr("node"), Some("urn:xmpp:avatar:metadata"));
+    }
+
+    #[test]
+    fn build_avatar_data_fetch_iq_uses_hash_prefix() {
+        let iq = build_avatar_data_fetch_iq("user@example.com", "abcdef1234567890");
+        let Iq::Get { id, to, payload, .. } = iq else {
+            panic!("expected Get IQ");
+        };
+        assert_eq!(id, "fetch-avatar-data-abcdef12");
+        assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
+        let items = payload.get_child("items", "http://jabber.org/protocol/pubsub").unwrap();
+        assert_eq!(items.attr("node"), Some("urn:xmpp:avatar:data"));
+    }
 }

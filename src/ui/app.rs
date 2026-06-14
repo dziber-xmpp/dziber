@@ -48,6 +48,39 @@ fn save_cached_avatar(jid: &str, bytes: &[u8]) {
     let _ = std::fs::write(path, bytes);
 }
 
+fn message_exists(state: &AppState, id: &str) -> bool {
+    state
+        .conversations
+        .iter()
+        .any(|c| c.messages.iter().any(|m| m.id == id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_exists_finds_known_message() {
+        let mut state = AppState::default();
+        let mut conv = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
+        conv.messages.push(crate::models::message::Message {
+            id: "known-id".to_string(),
+            from: "contact@example.com".to_string(),
+            body: "hi".to_string(),
+            timestamp: chrono::Utc::now(),
+            status: crate::models::message::MessageStatus::Received,
+            direction: crate::models::message::Direction::Incoming,
+        });
+        state.conversations.push(conv);
+
+        assert!(message_exists(&state, "known-id"));
+        assert!(!message_exists(&state, "unknown-id"));
+    }
+}
+
 fn sort_conversations(state: &mut AppState) {
     let selected_jid = state
         .selected_conversation
@@ -539,6 +572,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 let _ = crate::db::update_message_body(&target_id_owned, &new_body_owned);
                 refresh_chat_message_bodies(state);
                 state.draft.clear();
+                let omemo = state.omemo_enabled;
                 if let Some(ref mut sender) = state.xmpp_sender {
                     let mut sender = sender.clone();
                     return Task::perform(
@@ -549,6 +583,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                                     to,
                                     replace_id: target_id_owned,
                                     body: new_body_owned,
+                                    omemo,
                                 })
                                 .await;
                         },
@@ -607,6 +642,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let path_string = path.to_string_lossy().to_string();
+            let omemo = state.omemo_enabled;
             if let Some(ref mut sender) = state.xmpp_sender {
                 let mut sender = sender.clone();
                 return Task::perform(
@@ -615,6 +651,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                             .send(XmppCommand::SendFile {
                                 to,
                                 path: path_string,
+                                omemo,
                             })
                             .await;
                     },
@@ -1178,6 +1215,10 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     .map(|a| a.jid.clone())
                     .unwrap_or_default();
 
+                if message_exists(state, &msg.id) {
+                    return Task::none();
+                }
+
                 if let Err(e) = crate::db::save_message(&msg, &account_jid, &from_bare) {
                     tracing::info!("Failed to save message: {}", e);
                 }
@@ -1253,18 +1294,47 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 Task::none()
             }
             XmppEvent::OmemoMessageReceived {
+                id,
                 from,
                 body,
                 direction,
+                replace_id,
             } => {
+                if let Some(target_id) = replace_id {
+                    for conv in &mut state.conversations {
+                        if conv.contact_jid != from {
+                            continue;
+                        }
+                        if let Some(msg) = conv.messages.iter_mut().find(|m| m.id == target_id) {
+                            msg.body = body.clone();
+                            msg.timestamp = chrono::Utc::now();
+                        }
+                    }
+                    if let Err(e) = crate::db::update_message_body(&target_id, &body) {
+                        tracing::info!("Failed to update corrected OMEMO message: {}", e);
+                    }
+                    refresh_chat_message_bodies(state);
+                    return Task::none();
+                }
+
                 let account_jid = state
                     .account
                     .as_ref()
                     .map(|a| a.jid.clone())
                     .unwrap_or_default();
-                let msg = ChatMessage::new(from.clone(), body, direction);
+                let mut msg = ChatMessage::new(from.clone(), body, direction);
+                msg.id = id.clone();
                 let is_incoming = msg.direction == Direction::Incoming;
-                let notify_body = msg.body.clone();
+                // Don't expose decrypted OMEMO content in desktop notifications.
+                let notify_body = if is_incoming {
+                    String::from("🔒 Encrypted message")
+                } else {
+                    msg.body.clone()
+                };
+
+                if message_exists(state, &id) {
+                    return Task::none();
+                }
 
                 if let Err(e) = crate::db::save_message(&msg, &account_jid, &from) {
                     tracing::info!("Failed to save message: {}", e);
@@ -1301,7 +1371,15 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     Task::none()
                 }
             }
-            XmppEvent::BundleReceived => Task::none(),
+            XmppEvent::BundleReceived { .. } => Task::none(),
+            XmppEvent::OmemoReady { device_id } => {
+                tracing::info!("[UI] OmemoReady: device_id={}", device_id);
+                Task::none()
+            }
+            XmppEvent::DeviceListUpdated { jid, devices } => {
+                tracing::info!("[UI] DeviceListUpdated: jid={} devices={:?}", jid, devices);
+                Task::none()
+            }
             XmppEvent::AvatarReceived { jid, bytes } => {
                 tracing::info!("[UI] AvatarReceived: jid={} bytes={}", jid, bytes.len());
                 save_cached_avatar(&jid, &bytes);

@@ -289,7 +289,8 @@ fn quote_sieve_string(s: &str) -> String {
 fn literal_size(line: &str) -> Option<usize> {
     let trimmed = line.trim_end();
     let start = trimmed.rfind('{')?;
-    let inner = &trimmed[start + 1..trimmed.len() - 1];
+    let end = trimmed[start + 1..].find('}')? + start + 1;
+    let inner = &trimmed[start + 1..end];
     let size_str = inner.strip_suffix('+').unwrap_or(inner);
     size_str.parse().ok()
 }
@@ -421,5 +422,79 @@ mod tests {
         assert_eq!(unquote("\"hello\""), Some("hello".to_string()));
         assert_eq!(unquote("\"say \\\"hi\\\"\""), Some("say \"hi\"".to_string()));
         assert_eq!(unquote("plain"), None);
+    }
+
+    #[test]
+    fn sasl_plain_for_account_basic() {
+        use crate::models::account::{AuthMode, MailAccount, MailProtocol};
+        use base64::Engine;
+
+        let account = MailAccount {
+            id: "a".to_string(),
+            server_url: "s".to_string(),
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+            auth_mode: AuthMode::Basic,
+            mail_protocol: MailProtocol::Jmap,
+            sieve_config: None,
+        };
+        let encoded = sasl_plain_for_account(&account);
+        let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        assert_eq!(decoded, b"\0alice\0secret");
+    }
+
+    #[test]
+    fn sasl_plain_for_account_stalwart() {
+        use crate::models::account::{AuthMode, MailAccount, MailProtocol};
+        use base64::Engine;
+
+        let account = MailAccount {
+            id: "a".to_string(),
+            server_url: "s".to_string(),
+            username: "alice".to_string(),
+            password: "ignored".to_string(),
+            auth_mode: AuthMode::StalwartImpersonation {
+                admin_user: "admin".to_string(),
+                admin_pass: "adminpass".to_string(),
+            },
+            mail_protocol: MailProtocol::Jmap,
+            sieve_config: None,
+        };
+        let encoded = sasl_plain_for_account(&account);
+        let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        assert_eq!(decoded, b"\0alice%admin\0adminpass");
+    }
+
+    #[test]
+    fn split_sieve_response_respects_quotes_and_escapes() {
+        assert_eq!(
+            split_sieve_response(r#""foo" "bar""#),
+            vec!["\"foo\"", "\"bar\""]
+        );
+        assert_eq!(
+            split_sieve_response(r#"a "b c" d"#),
+            vec!["a", "\"b c\"", "d"]
+        );
+        assert_eq!(
+            split_sieve_response("spaced   out"),
+            vec!["spaced", "out"]
+        );
+        assert_eq!(
+            split_sieve_response(r#""escaped \"quote\"""#),
+            vec![r#""escaped \"quote\"""#]
+        );
+    }
+
+    #[test]
+    fn extract_literal_extracts_content_after_marker() {
+        assert_eq!(
+            extract_literal("{11} hello world\r\nOK"),
+            Some("hello world".to_string())
+        );
+        assert_eq!(
+            extract_literal("{7} \"vacation\"\r\nOK"),
+            Some("vacation".to_string())
+        );
+        assert_eq!(extract_literal("OK\r\n"), None);
     }
 }

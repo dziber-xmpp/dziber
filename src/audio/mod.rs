@@ -187,3 +187,92 @@ impl AudioEngine {
         self.media_task = Some(task);
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_runtime<F>(f: F)
+    where
+        F: FnOnce() + std::panic::UnwindSafe,
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { f() });
+    }
+
+    #[test]
+    fn new_engine_starts_idle() {
+        let engine = AudioEngine::new();
+        assert_eq!(engine.state(), AudioCallState::Idle);
+        assert!(engine.active_sid.is_none());
+        assert!(engine.peer_jid.is_none());
+    }
+
+    #[test]
+    fn start_call_sets_active_state() {
+        with_runtime(|| {
+            let mut engine = AudioEngine::new();
+            assert!(engine.start_call("peer@example.com", "sid-1").is_ok());
+            assert_eq!(engine.state(), AudioCallState::Active);
+            assert_eq!(engine.active_sid, Some("sid-1".to_string()));
+            assert_eq!(engine.peer_jid, Some("peer@example.com".to_string()));
+            assert!(engine.maolan.is_some());
+        });
+    }
+
+    #[test]
+    fn start_call_when_active_is_noop() {
+        with_runtime(|| {
+            let mut engine = AudioEngine::new();
+            engine.start_call("peer@example.com", "sid-1").unwrap();
+            assert!(engine.start_call("other@example.com", "sid-2").is_ok());
+            assert_eq!(engine.state(), AudioCallState::Active);
+            // State remains from the first call because early return keeps current values.
+            assert_eq!(engine.active_sid, Some("sid-1".to_string()));
+            assert_eq!(engine.peer_jid, Some("peer@example.com".to_string()));
+        });
+    }
+
+    #[test]
+    fn stop_call_resets_state() {
+        with_runtime(|| {
+            let mut engine = AudioEngine::new();
+            engine.start_call("peer@example.com", "sid-1").unwrap();
+            engine.stop_call();
+            assert_eq!(engine.state(), AudioCallState::Idle);
+            assert!(engine.active_sid.is_none());
+            assert!(engine.peer_jid.is_none());
+            assert!(engine.maolan.is_none());
+            assert!(engine.remote_candidates.is_empty());
+        });
+    }
+
+    #[test]
+    fn state_reflects_active_flag() {
+        with_runtime(|| {
+            let mut engine = AudioEngine::new();
+            assert_eq!(engine.state(), AudioCallState::Idle);
+            engine.start_call("peer@example.com", "sid-1").unwrap();
+            assert_eq!(engine.state(), AudioCallState::Active);
+        });
+    }
+
+    #[test]
+    fn local_candidates_returns_placeholder() {
+        let engine = AudioEngine::new();
+        let candidates = engine.local_candidates();
+        assert_eq!(candidates.len(), 1);
+        let c = &candidates[0];
+        assert_eq!(c.foundation, "1");
+        assert_eq!(c.component, 1);
+        assert_eq!(c.protocol, "udp");
+        assert_eq!(c.priority, 2_130_706_431);
+        assert_eq!(c.ip, "127.0.0.1");
+        assert_eq!(c.port, 5000);
+        assert_eq!(c.typ, "host");
+    }
+}

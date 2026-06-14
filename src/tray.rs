@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
     ShowRequested,
     QuitRequested,
@@ -37,7 +37,7 @@ pub fn set_unread_count(count: u32) {
     target_os = "openbsd",
     target_os = "netbsd"
 ))]
-mod sni_tray {
+pub(crate) mod sni_tray {
     use super::{TrayEvent, EVENT_RX, UNREAD_COUNT};
     use image::{Rgba, RgbaImage};
     use ksni::TrayMethods;
@@ -80,8 +80,8 @@ mod sni_tray {
         }
     }
 
-    struct DziberTray {
-        events: mpsc::Sender<TrayEvent>,
+    pub(crate) struct DziberTray {
+        pub(crate) events: mpsc::Sender<TrayEvent>,
     }
 
     impl ksni::Tray for DziberTray {
@@ -126,7 +126,7 @@ mod sni_tray {
         }
     }
 
-    fn ksni_icon(count: u32) -> ksni::Icon {
+    pub(crate) fn ksni_icon(count: u32) -> ksni::Icon {
         let (rgba, width, height) = render_rgba(count);
         let mut data = rgba;
 
@@ -142,7 +142,7 @@ mod sni_tray {
         }
     }
 
-    fn render_rgba(count: u32) -> (Vec<u8>, u32, u32) {
+    pub(crate) fn render_rgba(count: u32) -> (Vec<u8>, u32, u32) {
         const SIZE: u32 = 64;
         let mut img = RgbaImage::from_pixel(SIZE, SIZE, Rgba([46, 134, 222, 255]));
 
@@ -155,7 +155,7 @@ mod sni_tray {
         (img.into_raw(), SIZE, SIZE)
     }
 
-    fn draw_envelope(img: &mut RgbaImage) {
+    pub(crate) fn draw_envelope(img: &mut RgbaImage) {
         let white = Rgba([255, 255, 255, 255]);
         let left = 12i32;
         let right = 52i32;
@@ -174,7 +174,7 @@ mod sni_tray {
         draw_line(img, 32, 34, right, top, Rgba([46, 134, 222, 255]));
     }
 
-    fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgba<u8>) {
+    pub(crate) fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgba<u8>) {
         let dx = (x1 - x0).abs();
         let dy = (y1 - y0).abs();
         let sx = if x0 < x1 { 1 } else { -1 };
@@ -202,7 +202,7 @@ mod sni_tray {
         }
     }
 
-    fn draw_badge(img: &mut RgbaImage, count: u32) {
+    pub(crate) fn draw_badge(img: &mut RgbaImage, count: u32) {
         let red = Rgba([220, 53, 69, 255]);
         let white = Rgba([255, 255, 255, 255]);
         let radius = 14u32;
@@ -233,7 +233,7 @@ mod sni_tray {
         }
     }
 
-    fn draw_digit(img: &mut RgbaImage, digit: usize, x: i32, y: i32, color: Rgba<u8>) {
+    pub(crate) fn draw_digit(img: &mut RgbaImage, digit: usize, x: i32, y: i32, color: Rgba<u8>) {
         #[rustfmt::skip]
         const FONT: [[u8; 7]; 10] = [
             [15, 9, 9, 9, 9, 9, 15],
@@ -277,4 +277,115 @@ mod sni_tray {
     }
 
     pub(super) fn refresh_icon() {}
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn try_recv_event_before_init_returns_none() {
+        // EVENT_RX has not been set yet, so polling should return None.
+        assert!(try_recv_event().is_none());
+    }
+
+    #[test]
+    fn set_unread_count_updates_static() {
+        set_unread_count(12);
+        assert_eq!(UNREAD_COUNT.load(Ordering::Relaxed), 12);
+        set_unread_count(0);
+        assert_eq!(UNREAD_COUNT.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    mod unix {
+        use super::sni_tray::*;
+        use super::{UNREAD_COUNT};
+        use image::{Rgba, RgbaImage};
+        use ksni::Tray;
+        use ksni::menu::MenuItem;
+        use std::sync::atomic::Ordering;
+
+        fn test_tray() -> DziberTray {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            DziberTray { events: tx }
+        }
+
+        #[test]
+        fn tray_title_reflects_count() {
+            let tray = test_tray();
+            UNREAD_COUNT.store(5, Ordering::Relaxed);
+            assert_eq!(tray.title(), "Dziber - 5 unread");
+            UNREAD_COUNT.store(0, Ordering::Relaxed);
+        }
+
+        #[test]
+        fn tray_menu_has_show_and_quit() {
+            let tray = test_tray();
+            let items = tray.menu();
+            assert_eq!(items.len(), 3);
+            match &items[0] {
+                MenuItem::Standard(item) => assert_eq!(item.label, "Show Dziber"),
+                _ => panic!("expected Show standard item"),
+            }
+            assert!(matches!(items[1], MenuItem::Separator));
+            match &items[2] {
+                MenuItem::Standard(item) => assert_eq!(item.label, "Quit Dziber"),
+                _ => panic!("expected Quit standard item"),
+            }
+        }
+
+        #[test]
+        fn ksni_icon_has_expected_size() {
+            let icon = ksni_icon(7);
+            assert_eq!(icon.width, 64);
+            assert_eq!(icon.height, 64);
+            assert_eq!(icon.data.len(), 64 * 64 * 4);
+        }
+
+        #[test]
+        fn render_rgba_produces_64x64_image() {
+            let (data, width, height) = render_rgba(3);
+            assert_eq!(width, 64);
+            assert_eq!(height, 64);
+            assert_eq!(data.len(), 64 * 64 * 4);
+        }
+
+        #[test]
+        fn draw_line_changes_pixels() {
+            let mut img = RgbaImage::from_pixel(64, 64, Rgba([0, 0, 0, 255]));
+            draw_line(&mut img, 0, 0, 63, 63, Rgba([255, 255, 255, 255]));
+            assert_eq!(*img.get_pixel(32, 32), Rgba([255, 255, 255, 255]));
+        }
+
+        #[test]
+        fn draw_digit_changes_pixels() {
+            let mut img = RgbaImage::from_pixel(64, 64, Rgba([0, 0, 0, 255]));
+            draw_digit(&mut img, 8, 10, 10, Rgba([255, 255, 255, 255]));
+            let pixel = img.get_pixel(10, 10);
+            assert!(pixel.0.iter().take(3).any(|c| *c > 0));
+        }
+
+        #[test]
+        fn draw_badge_draws_red_circle() {
+            let mut img = RgbaImage::from_pixel(64, 64, Rgba([46, 134, 222, 255]));
+            draw_badge(&mut img, 5);
+            // Center of the badge (cx = 64 - 14 - 2 = 48, cy = 14 + 2 = 16).
+            assert_eq!(*img.get_pixel(48, 16), Rgba([220, 53, 69, 255]));
+        }
+
+        #[test]
+        fn draw_envelope_draws_white_body() {
+            let mut img = RgbaImage::from_pixel(64, 64, Rgba([46, 134, 222, 255]));
+            draw_envelope(&mut img);
+            assert_eq!(*img.get_pixel(20, 30), Rgba([255, 255, 255, 255]));
+        }
+    }
 }

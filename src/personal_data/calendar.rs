@@ -1210,6 +1210,7 @@ impl CalendarClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     fn sample_event() -> CalendarEvent {
         CalendarEvent {
@@ -1285,5 +1286,130 @@ mod tests {
         assert_eq!(events[0].title, "One");
         assert_eq!(events[1].title, "Two");
         assert_eq!(tasks[0].title, "Task");
+    }
+
+    #[test]
+    fn unfold_ics_removes_continuation_whitespace() {
+        let folded = "SUMMARY:hello\r\n world\r\nDESCRIPTION:line\n continued";
+        assert_eq!(unfold_ics(folded), "SUMMARY:helloworld\r\nDESCRIPTION:linecontinued");
+    }
+
+    #[test]
+    fn parse_ics_properties_extracts_name_value_pairs() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nUID:evt\r\nSUMMARY:Hello\\, world\r\nDTSTART;VALUE=DATE:20260614\r\nEND:VCALENDAR\r\n";
+        let props = parse_ics_properties(ics);
+        assert!(props.iter().any(|(k, v)| k == "UID" && v == "evt"));
+        assert!(props.iter().any(|(k, v)| k == "SUMMARY" && v == "Hello\\, world"));
+        assert!(props.iter().any(|(k, v)| k == "DTSTART" && v == "20260614"));
+    }
+
+    #[test]
+    fn decode_and_encode_ics_text_are_inverses() {
+        let original = "Line one\nLine two, with; commas and \\ backslash";
+        let encoded = encode_ics_text(original);
+        assert!(encoded.contains("\\n"));
+        assert!(encoded.contains("\\,"));
+        assert!(encoded.contains("\\;"));
+        assert!(encoded.contains("\\\\"));
+        assert_eq!(decode_ics_text(&encoded), original);
+    }
+
+    #[test]
+    fn parse_datetime_handles_date_and_datetime() {
+        let date = parse_datetime("20260614").unwrap();
+        assert_eq!(date.format("%Y%m%d").to_string(), "20260614");
+        assert_eq!(date.hour(), 0);
+
+        let utc = parse_datetime("20260614T123456Z").unwrap();
+        assert_eq!(utc.to_rfc3339(), "2026-06-14T12:34:56+00:00");
+
+        let naive = parse_datetime("20260614T123456").unwrap();
+        assert_eq!(naive.to_rfc3339(), "2026-06-14T12:34:56+00:00");
+
+        assert!(parse_datetime("not-a-date").is_none());
+    }
+
+    #[test]
+    fn format_datetime_produces_expected_formats() {
+        let dt = Utc.with_ymd_and_hms(2026, 6, 14, 12, 34, 56).unwrap();
+        assert_eq!(format_datetime(dt, true), "20260614");
+        assert_eq!(format_datetime(dt, false), "20260614T123456Z");
+    }
+
+    #[test]
+    fn ics_components_extracts_named_blocks() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:e1\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:e2\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:t1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let events = ics_components(ics, "VEVENT");
+        assert_eq!(events.len(), 2);
+        assert!(events[0].contains("UID:e1"));
+        assert!(events[1].contains("UID:e2"));
+
+        let tasks = ics_components(ics, "VTODO");
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].contains("UID:t1"));
+    }
+
+    #[test]
+    fn parse_iso_duration_converts_common_durations() {
+        assert_eq!(parse_iso_duration("P1D"), Some(Duration::days(1)));
+        assert_eq!(parse_iso_duration("PT2H30M"), Some(Duration::seconds(9000)));
+        assert_eq!(parse_iso_duration("PT45S"), Some(Duration::seconds(45)));
+        assert_eq!(parse_iso_duration("PT1.5S"), Some(Duration::seconds(1)));
+        assert!(parse_iso_duration("invalid").is_none());
+    }
+
+    #[test]
+    fn duration_to_iso_formats_seconds() {
+        assert_eq!(duration_to_iso(Duration::hours(2)), "PT2H");
+        assert_eq!(duration_to_iso(Duration::minutes(90)), "PT1H30M");
+        assert_eq!(duration_to_iso(Duration::seconds(3661)), "PT1H1M1S");
+    }
+
+    #[test]
+    fn parse_jmap_datetime_accepts_multiple_formats() {
+        assert_eq!(
+            parse_jmap_datetime("2026-06-14T12:34:56Z").map(|d| d.to_rfc3339()),
+            Some("2026-06-14T12:34:56+00:00".to_string())
+        );
+        assert_eq!(
+            parse_jmap_datetime("2026-06-14T12:34:56").map(|d| d.to_rfc3339()),
+            Some("2026-06-14T12:34:56+00:00".to_string())
+        );
+        assert_eq!(
+            parse_jmap_datetime("2026-06-14").map(|d| d.format("%Y-%m-%d").to_string()),
+            Some("2026-06-14".to_string())
+        );
+        assert!(parse_jmap_datetime("bad").is_none());
+    }
+
+    #[test]
+    fn event_to_jmap_json_has_required_fields() {
+        let event = sample_event();
+        let value = event_to_jmap_json(&event);
+        assert_eq!(value["uid"], json!(event.uid));
+        assert_eq!(value["title"], json!(event.title));
+        assert_eq!(value["timeZone"], json!("UTC"));
+        assert_eq!(value["duration"], json!("PT1H"));
+    }
+
+    #[test]
+    fn all_day_event_to_jmap_json_uses_date_and_p1d() {
+        let mut event = sample_event();
+        event.all_day = true;
+        let value = event_to_jmap_json(&event);
+        assert_eq!(value["start"], json!(event.start.format("%Y-%m-%d").to_string()));
+        assert_eq!(value["duration"], json!("P1D"));
+        assert_eq!(value["showWithoutTime"], json!(true));
+    }
+
+    #[test]
+    fn task_to_jmap_json_has_required_fields() {
+        let task = sample_task();
+        let value = task_to_jmap_json(&task);
+        assert_eq!(value["uid"], json!(task.uid));
+        assert_eq!(value["title"], json!(task.title));
+        assert_eq!(value["priority"], json!(task.priority));
+        assert_eq!(value["percentComplete"], json!(task.percent_complete));
+        assert!(value["due"].is_string());
     }
 }

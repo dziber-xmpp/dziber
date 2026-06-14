@@ -1,6 +1,6 @@
 use qrcodegen::{QrCode, QrCodeEcc};
 
-use crate::omemo::OmemoManager;
+use dziber_omemo::OmemoManager;
 
 fn hex_lower(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len() * 2);
@@ -11,7 +11,7 @@ fn hex_lower(data: &[u8]) -> String {
 }
 
 pub fn build_share_uri(jid: &str) -> Option<String> {
-    let mut mgr = OmemoManager::load_or_generate(1);
+    let mut mgr = OmemoManager::load_or_generate(1, Box::new(crate::db::omemo::DziberOmemoStore));
     mgr.set_our_jid(jid);
     let device_id = mgr.our_device_id();
     let fp = hex_lower(&mgr.account.inner.curve25519_key().to_bytes());

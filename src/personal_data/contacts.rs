@@ -713,4 +713,74 @@ mod tests {
         assert_eq!(imported[0].display_name, "One");
         assert_eq!(imported[1].display_name, "Two");
     }
+
+    #[test]
+    fn first_text_skips_non_text_values() {
+        use calcard::vcard::VCardValue;
+        let values = vec![
+            VCardValue::Component(vec!["Smith".into(), "Alice".into()]),
+            VCardValue::Text("hello".into()),
+        ];
+        assert_eq!(first_text(&values), Some("hello".to_string()));
+        assert_eq!(first_text(&[]), None);
+    }
+
+    #[test]
+    fn first_component_skips_non_component_values() {
+        use calcard::vcard::VCardValue;
+        let values = vec![
+            VCardValue::Text("text".into()),
+            VCardValue::Component(vec!["a".into(), "b".into()]),
+        ];
+        assert_eq!(first_component(&values), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(first_component(&[]), None);
+    }
+
+    #[test]
+    fn parse_vcard_extracts_fields() {
+        let vcf = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:abc\r\nFN:Alice Smith\r\nN:Smith,Alice\r\nEMAIL;TYPE=INTERNET:alice@example.com\r\nTEL:+1234567890\r\nORG:Example Inc.\r\nNOTE:Hello\\, world\r\nEND:VCARD\r\n";
+        let contact = parse_vcard("acc", "ab", "/card/abc.vcf", Some("etag1".to_string()), vcf).unwrap();
+        assert_eq!(contact.uid, "abc");
+        assert_eq!(contact.id, "abc");
+        assert_eq!(contact.display_name, "Alice Smith");
+        assert_eq!(contact.first_name, "Alice");
+        assert_eq!(contact.last_name, "Smith");
+        assert_eq!(contact.emails, vec!["alice@example.com".to_string()]);
+        assert_eq!(contact.phones, vec!["+1234567890".to_string()]);
+        assert_eq!(contact.org, "Example Inc.");
+        assert_eq!(contact.note, "Hello, world");
+        assert_eq!(contact.etag, Some("etag1".to_string()));
+    }
+
+    #[test]
+    fn serialize_vcard_outputs_required_properties() {
+        let contact = sample_contact();
+        let vcf = serialize_vcard(&contact);
+        assert!(vcf.starts_with("BEGIN:VCARD"));
+        assert!(vcf.contains("UID:c1"));
+        assert!(vcf.contains("FN:Alice Smith"));
+        assert!(vcf.contains("N:Smith;Alice;;;"));
+        assert!(vcf.contains("EMAIL;TYPE=INTERNET:alice@example.com"));
+        assert!(vcf.contains("TEL;TYPE=VOICE:+123"));
+        assert!(vcf.contains("ORG:Example"));
+        assert!(vcf.contains("NOTE:Friend"));
+        assert!(vcf.ends_with("END:VCARD\r\n"));
+    }
+
+    #[test]
+    fn import_vcards_ignores_garbage_and_empty_input() {
+        assert!(import_vcards("", "a", "ab").is_empty());
+        let vcf = "garbage line\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:X\r\nEND:VCARD\r\ntrailing";
+        let imported = import_vcards(vcf, "a", "ab");
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].display_name, "X");
+    }
+
+    #[test]
+    fn export_vcards_joins_serializations() {
+        let contact = sample_contact();
+        let exported = export_vcards(&[contact.clone(), contact.clone()]);
+        assert_eq!(exported.matches("BEGIN:VCARD").count(), 2);
+        assert!(exported.contains("Alice Smith"));
+    }
 }

@@ -612,3 +612,99 @@ impl MailClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::account::{AuthMode, MailAccount, MailProtocol};
+
+    fn test_account() -> MailAccount {
+        MailAccount {
+            id: "acc-1".to_string(),
+            server_url: "https://example.com".to_string(),
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+            auth_mode: AuthMode::Basic,
+            mail_protocol: MailProtocol::Jmap,
+            sieve_config: None,
+        }
+    }
+
+    #[test]
+    fn jmap_mail_client_new_sets_fields() {
+        let account = test_account();
+        let client = JmapMailClient::new(&account);
+        assert_eq!(client.base_url, "https://example.com");
+        assert_eq!(client.account_id, "acc-1");
+        assert!(client.auth_header.starts_with("Basic "));
+    }
+
+    #[test]
+    fn build_url_joins_or_passthroughs() {
+        let client = JmapMailClient::new(&test_account());
+        assert_eq!(client.build_url("/jmap"), "https://example.com/jmap");
+        assert_eq!(client.build_url("jmap"), "https://example.com/jmap");
+        assert_eq!(client.build_url("https://other.test/api"), "https://other.test/api");
+    }
+
+    #[test]
+    fn extract_response_finds_method() {
+        let client = JmapMailClient::new(&test_account());
+        let data = json!({
+            "methodResponses": [
+                ["Mailbox/get", { "list": [] }, "0"],
+                ["Email/get", { "list": [ { "id": "e1" } ] }, "1"]
+            ]
+        });
+        let args = client.extract_response(&data, "Email/get").unwrap();
+        assert_eq!(args["list"].as_array().unwrap().len(), 1);
+        assert!(client.extract_response(&data, "Mailbox/changes").is_none());
+    }
+
+    #[test]
+    fn parse_email_populates_fields() {
+        let client = JmapMailClient::new(&test_account());
+        let item = json!({
+            "id": "e1",
+            "threadId": "t1",
+            "mailboxIds": { "m1": true },
+            "keywords": { "$seen": true },
+            "from": [{ "name": "Alice", "email": "alice@example.com" }],
+            "to": [{ "email": "bob@example.com" }],
+            "cc": [],
+            "bcc": [],
+            "subject": "Hello",
+            "receivedAt": "2026-06-14T12:34:56Z",
+            "preview": "Preview text",
+            "hasAttachment": false,
+            "size": 123
+        });
+        let email = client.parse_email(&item);
+        assert_eq!(email.id, "e1");
+        assert_eq!(email.account_id, "acc-1");
+        assert_eq!(email.thread_id, "t1");
+        assert_eq!(email.mailbox_ids, vec!["m1".to_string()]);
+        assert_eq!(email.from.len(), 1);
+        assert_eq!(email.from[0].name, Some("Alice".to_string()));
+        assert_eq!(email.from[0].email, "alice@example.com".to_string());
+        assert_eq!(email.to.len(), 1);
+        assert_eq!(email.to[0].email, "bob@example.com".to_string());
+        assert_eq!(email.subject, "Hello");
+        assert_eq!(email.preview, "Preview text");
+        assert!(email.keywords.contains(&"$seen".to_string()));
+        assert_eq!(email.size, 123);
+        assert!(!email.has_attachments);
+    }
+
+    #[test]
+    fn parse_email_uses_defaults() {
+        let client = JmapMailClient::new(&test_account());
+        let item = json!({ "id": "e2" });
+        let email = client.parse_email(&item);
+        assert_eq!(email.id, "e2");
+        assert!(email.subject.is_empty());
+        assert!(email.from.is_empty());
+        assert!(!email.has_attachments);
+        assert_eq!(email.size, 0);
+    }
+}

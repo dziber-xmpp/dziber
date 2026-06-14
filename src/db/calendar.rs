@@ -317,3 +317,197 @@ pub fn load_tasks(
         .collect())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use diesel::prelude::*;
+
+    use crate::db::models::{DbCalendar, DbCalendarAccount};
+    use crate::db::schema::{calendar_accounts, calendars};
+    use crate::db::test_helpers::{connection, with_test_db};
+    use crate::models::calendar::Calendar;
+    use crate::models::event::CalendarEvent;
+    use crate::models::task::CalendarTask;
+
+    fn insert_calendar_account(account_id: &str) {
+        let mut conn = connection();
+        diesel::insert_into(calendar_accounts::table)
+            .values(&DbCalendarAccount {
+                id: account_id.to_string(),
+                server_url: "https://calendar.example.com".to_string(),
+                username: "user".to_string(),
+                password: String::new(),
+                auth_mode: "basic".to_string(),
+                admin_user: None,
+                admin_pass: None,
+                last_sync: None,
+                calendar_protocol: "dav".to_string(),
+            })
+            .execute(&mut conn)
+            .unwrap();
+    }
+
+    fn insert_calendar(id: &str, account_id: &str) {
+        let mut conn = connection();
+        diesel::insert_into(calendars::table)
+            .values(&DbCalendar {
+                id: id.to_string(),
+                account_id: account_id.to_string(),
+                href: format!("/calendars/{}/", id),
+                name: format!("Calendar {}", id),
+                color: Some("#ff0000".to_string()),
+                ctag: Some("1".to_string()),
+            })
+            .execute(&mut conn)
+            .unwrap();
+    }
+
+    fn sample_calendar(id: &str, account_id: &str, name: &str) -> Calendar {
+        Calendar {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            href: format!("/calendars/{}/", id),
+            name: name.to_string(),
+            color: Some("#00ff00".to_string()),
+            ctag: Some("2".to_string()),
+        }
+    }
+
+    fn sample_event(id: &str, account_id: &str, calendar_id: &str, title: &str) -> CalendarEvent {
+        let start = Utc::now();
+        CalendarEvent {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            calendar_id: calendar_id.to_string(),
+            href: format!("/events/{}", id),
+            etag: Some("etag".to_string()),
+            uid: format!("uid-{}", id),
+            title: title.to_string(),
+            start,
+            end: start + chrono::Duration::hours(1),
+            all_day: false,
+            description: "description".to_string(),
+            location: "location".to_string(),
+            status: "confirmed".to_string(),
+            raw_ics: "ICS".to_string(),
+        }
+    }
+
+    fn sample_task(id: &str, account_id: &str, calendar_id: &str, title: &str) -> CalendarTask {
+        CalendarTask {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            calendar_id: calendar_id.to_string(),
+            href: format!("/tasks/{}", id),
+            etag: Some("etag".to_string()),
+            uid: format!("uid-{}", id),
+            title: title.to_string(),
+            due: Some(Utc::now()),
+            all_day: false,
+            description: "description".to_string(),
+            location: "location".to_string(),
+            status: "needs-action".to_string(),
+            priority: 1,
+            percent_complete: 50,
+            completed: None,
+            raw_ics: "ICS".to_string(),
+        }
+    }
+
+    #[test]
+    fn save_and_load_calendars() {
+        let _guard = with_test_db();
+        insert_calendar_account("cal-acc-1");
+
+        let items = vec![
+            sample_calendar("cal2", "cal-acc-1", "Work"),
+            sample_calendar("cal1", "cal-acc-1", "Personal"),
+        ];
+        super::save_calendars("cal-acc-1", &items).unwrap();
+        let loaded = super::load_calendars("cal-acc-1").unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "Personal");
+        assert_eq!(loaded[1].name, "Work");
+        assert_eq!(loaded, vec![
+            sample_calendar("cal1", "cal-acc-1", "Personal"),
+            sample_calendar("cal2", "cal-acc-1", "Work"),
+        ]);
+    }
+
+    #[test]
+    fn save_and_load_events() {
+        let _guard = with_test_db();
+        insert_calendar_account("cal-acc-1");
+        insert_calendar("cal-1", "cal-acc-1");
+
+        let events = vec![
+            sample_event("e1", "cal-acc-1", "cal-1", "Meeting"),
+            sample_event("e2", "cal-acc-1", "cal-1", "Lunch"),
+        ];
+        super::save_events("cal-acc-1", &events).unwrap();
+        let loaded = super::load_events("cal-acc-1", None).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        for (original, loaded_event) in events.iter().zip(loaded.iter()) {
+            assert_eq!(original.id, loaded_event.id);
+            assert_eq!(original.title, loaded_event.title);
+            assert_eq!(original.calendar_id, loaded_event.calendar_id);
+        }
+    }
+
+    #[test]
+    fn load_events_by_calendar() {
+        let _guard = with_test_db();
+        insert_calendar_account("cal-acc-1");
+        insert_calendar("cal-1", "cal-acc-1");
+        insert_calendar("cal-2", "cal-acc-1");
+
+        let event_a = sample_event("e1", "cal-acc-1", "cal-1", "A");
+        let event_b = sample_event("e2", "cal-acc-1", "cal-2", "B");
+        super::save_events("cal-acc-1", &[event_a, event_b]).unwrap();
+
+        let loaded = super::load_events("cal-acc-1", Some("cal-2")).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "e2");
+    }
+
+    #[test]
+    fn save_and_load_tasks() {
+        let _guard = with_test_db();
+        insert_calendar_account("cal-acc-1");
+        insert_calendar("cal-1", "cal-acc-1");
+
+        let tasks = vec![
+            sample_task("t1", "cal-acc-1", "cal-1", "Task 1"),
+            CalendarTask {
+                completed: Some(Utc::now()),
+                ..sample_task("t2", "cal-acc-1", "cal-1", "Task 2")
+            },
+        ];
+        super::save_tasks("cal-acc-1", &tasks).unwrap();
+        let loaded = super::load_tasks("cal-acc-1", None).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "t1");
+        assert_eq!(loaded[1].id, "t2");
+        assert!(loaded[1].completed.is_some());
+    }
+
+    #[test]
+    fn load_tasks_by_calendar() {
+        let _guard = with_test_db();
+        insert_calendar_account("cal-acc-1");
+        insert_calendar("cal-1", "cal-acc-1");
+        insert_calendar("cal-2", "cal-acc-1");
+
+        let task_a = sample_task("t1", "cal-acc-1", "cal-1", "A");
+        let task_b = sample_task("t2", "cal-acc-1", "cal-2", "B");
+        super::save_tasks("cal-acc-1", &[task_a, task_b]).unwrap();
+
+        let loaded = super::load_tasks("cal-acc-1", Some("cal-1")).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "t1");
+    }
+}

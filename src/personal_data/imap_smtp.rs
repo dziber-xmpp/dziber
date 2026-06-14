@@ -535,3 +535,90 @@ fn parse_datetime(value: &mail_parser::DateTime) -> Option<DateTime<Utc>> {
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_imap::types::Flag;
+
+    fn sample_message_bytes() -> Vec<u8> {
+        "From: Alice <alice@example.com>\r\n\
+         To: Bob <bob@example.com>\r\n\
+         Cc: Carol <carol@example.com>\r\n\
+         Subject: Test message\r\n\
+         Date: Mon, 15 Jun 2026 10:00:00 +0000\r\n\
+         Content-Type: text/plain\r\n\
+         Message-Id: <msg1@example.com>\r\n\r\n\
+         Hello, world!"
+            .bytes()
+            .collect()
+    }
+
+    #[test]
+    fn infer_role_recognises_standard_mailboxes() {
+        assert_eq!(infer_role("INBOX"), Some("inbox".to_string()));
+        assert_eq!(infer_role("Sent"), Some("sent".to_string()));
+        assert_eq!(infer_role("Drafts"), Some("drafts".to_string()));
+        assert_eq!(infer_role("Trash"), Some("trash".to_string()));
+        assert_eq!(infer_role("Deleted Items"), Some("trash".to_string()));
+        assert_eq!(infer_role("Junk"), Some("spam".to_string()));
+        assert_eq!(infer_role("Archive"), Some("archive".to_string()));
+        assert_eq!(infer_role("Custom"), None);
+    }
+
+    #[test]
+    fn parse_email_id_roundtrips_with_email_id() {
+        assert_eq!(parse_email_id("123\x1fINBOX"), Ok((123, "INBOX".to_string())));
+        assert_eq!(email_id(123, "INBOX"), "123\x1fINBOX");
+        assert!(parse_email_id("abc\x1fINBOX").is_err());
+        assert!(parse_email_id("123").is_err());
+    }
+
+    #[test]
+    fn parse_addresses_from_message() {
+        let bytes = sample_message_bytes();
+        let message = mail_parser::MessageParser::default().parse(&bytes).unwrap();
+        let from = parse_addresses(message.from());
+        assert_eq!(from.len(), 1);
+        assert_eq!(from[0].name, Some("Alice".to_string()));
+        assert_eq!(from[0].email, "alice@example.com".to_string());
+
+        let to = parse_addresses(message.to());
+        assert_eq!(to.len(), 1);
+        assert_eq!(to[0].email, "bob@example.com".to_string());
+
+        let cc = parse_addresses(message.cc());
+        assert_eq!(cc.len(), 1);
+        assert_eq!(cc[0].email, "carol@example.com".to_string());
+
+        assert!(parse_addresses(None).is_empty());
+    }
+
+    #[test]
+    fn parse_datetime_from_message_date() {
+        let bytes = sample_message_bytes();
+        let message = mail_parser::MessageParser::default().parse(&bytes).unwrap();
+        let dt = parse_datetime(message.date().unwrap()).unwrap();
+        assert_eq!(dt.to_rfc3339(), "2026-06-15T10:00:00+00:00");
+    }
+
+    #[test]
+    fn build_email_from_parsed_message() {
+        let bytes = sample_message_bytes();
+        let email = build_email(42, "INBOX", "alice@example.com", &bytes, &[]).unwrap();
+        assert_eq!(email.id, "42\x1fINBOX");
+        assert_eq!(email.mailbox_ids, vec!["INBOX".to_string()]);
+        assert_eq!(email.from.len(), 1);
+        assert_eq!(email.subject, "Test message");
+        assert_eq!(email.body_text, Some("Hello, world!".to_string()));
+        assert!(!email.has_attachments);
+        assert_eq!(email.size, bytes.len() as i64);
+    }
+
+    #[test]
+    fn build_email_flags_mark_seen() {
+        let bytes = sample_message_bytes();
+        let email = build_email(1, "INBOX", "a", &bytes, &[Flag::Seen]).unwrap();
+        assert!(email.keywords.contains(&"$seen".to_string()));
+    }
+}

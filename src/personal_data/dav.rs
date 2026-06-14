@@ -301,3 +301,117 @@ pub fn extract_rel_path(href: &str, prefix: &str) -> String {
         .unwrap_or("")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_account_percent_encodes_specials() {
+        assert_eq!(encode_account("user name"), "user%20name");
+        assert_eq!(encode_account("a#b"), "a%23b");
+        assert_eq!(encode_account("100%"), "100%25");
+        assert_eq!(encode_account("user@example.com"), "user@example.com");
+    }
+
+    #[test]
+    fn dav_response_prop_lookup_is_case_insensitive() {
+        let resp = DavResponse {
+            href: "/".to_string(),
+            status: 200,
+            props: vec![DavProperty {
+                name: "displayName".to_string(),
+                value: "My Calendar".to_string(),
+            }],
+        };
+        assert_eq!(resp.prop("displayname"), Some("My Calendar"));
+        assert_eq!(resp.prop("DISPLAYNAME"), Some("My Calendar"));
+        assert_eq!(resp.prop("missing"), None);
+    }
+
+    #[test]
+    fn dav_response_resource_type_splits_and_lowercases() {
+        let resp = DavResponse {
+            href: "/".to_string(),
+            status: 200,
+            props: vec![DavProperty {
+                name: "resourcetype".to_string(),
+                value: "collection | calendar".to_string(),
+            }],
+        };
+        assert_eq!(resp.resource_type(), vec!["collection", "calendar"]);
+
+        let empty = DavResponse::default();
+        assert!(empty.resource_type().is_empty());
+    }
+
+    #[test]
+    fn parse_multistatus_extracts_href_props_and_status() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/alice/calendar/</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:displayname>My Calendar</D:displayname>
+        <D:resourcetype><D:collection/><D:calendar/></D:resourcetype>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let parsed = parse_multistatus(xml);
+        assert_eq!(parsed.len(), 1);
+        let resp = &parsed[0];
+        assert_eq!(resp.href, "/dav/cal/alice/calendar/");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.prop("displayname"), Some("My Calendar"));
+        assert_eq!(resp.resource_type(), vec!["collection", "calendar"]);
+    }
+
+    #[test]
+    fn parse_multistatus_skips_failed_propstat() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/alice/calendar/</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:displayname>My Calendar</D:displayname>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+    <D:propstat>
+      <D:prop>
+        <D:getctag/>
+      </D:prop>
+      <D:status>HTTP/1.1 404 Not Found</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let parsed = parse_multistatus(xml);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].prop("displayname"), Some("My Calendar"));
+        assert_eq!(parsed[0].prop("getctag"), None);
+        assert_eq!(parsed[0].status, 200);
+    }
+
+    #[test]
+    fn parse_multistatus_malformed_returns_empty() {
+        let parsed = parse_multistatus("not xml at all");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn extract_rel_path_splits_on_prefix() {
+        assert_eq!(
+            extract_rel_path("/dav/cal/alice/calendar/", "cal"),
+            "alice/calendar/"
+        );
+        assert_eq!(
+            extract_rel_path("/dav/card/alice/addressbook/", "card"),
+            "alice/addressbook/"
+        );
+        assert_eq!(extract_rel_path("/other/path", "cal"), "");
+    }
+}

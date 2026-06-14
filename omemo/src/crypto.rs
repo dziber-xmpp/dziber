@@ -5,6 +5,8 @@ use aes_gcm::{
 };
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
+#[cfg(test)]
+use cbc::cipher::BlockEncryptMut;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -91,7 +93,7 @@ pub fn encrypt_payload_v0_conversations(
 }
 
 /// Derive encryption key, authentication key, and IV from the 32-byte payload key (v0 only).
-fn derive_keys_v0(key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 16]) {
+pub(crate) fn derive_keys_v0(key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 16]) {
     let hkdf = Hkdf::<Sha256>::new(Some(&[0u8; 32]), key);
     let mut okm = [0u8; 80];
     hkdf.expand(b"OMEMO Payload", &mut okm).unwrap();
@@ -104,4 +106,73 @@ fn derive_keys_v0(key: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 16]) {
     iv.copy_from_slice(&okm[64..80]);
 
     (enc_key, auth_key, iv)
+}
+
+/// OMEMO v0 payload encryption: AES-256-CBC + truncated HMAC-SHA-256.
+///
+/// Returns `(ciphertext, key, hmac)` where `key` is the random 32-byte payload key
+/// and `hmac` is the 16-byte truncated authentication tag.
+#[cfg(test)]
+pub fn encrypt_payload_v0(plaintext: &[u8]) -> (Vec<u8>, [u8; 32], [u8; 16]) {
+    let mut key = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut key);
+
+    let (enc_key, auth_key, iv) = derive_keys_v0(&key);
+
+    let mut buf = vec![0u8; plaintext.len() + 32];
+    let enc = cbc::Encryptor::<Aes256>::new(&enc_key.into(), &iv.into());
+    let ct = enc
+        .encrypt_padded_b2b_mut::<Pkcs7>(plaintext, &mut buf)
+        .expect("AES-256-CBC encryption failed");
+    let ciphertext = ct.to_vec();
+
+    let mut mac = <Hmac<Sha256> as hmac::Mac>::new_from_slice(&auth_key)
+        .expect("HMAC-SHA256 key creation failed");
+    mac.update(&ciphertext);
+    let tag = mac.finalize().into_bytes();
+
+    let mut hmac = [0u8; 16];
+    hmac.copy_from_slice(&tag[..16]);
+
+    (ciphertext, key, hmac)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_keys_v0_is_deterministic() {
+        let key = [0xA5u8; 32];
+        let a = derive_keys_v0(&key);
+        let b = derive_keys_v0(&key);
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1, b.1);
+        assert_eq!(a.2, b.2);
+    }
+
+    #[test]
+    fn encrypt_payload_v0_roundtrip() {
+        let plaintext = b"OMEMO v0 CBC payload";
+        let (ciphertext, key, hmac) = encrypt_payload_v0(plaintext);
+        let decrypted = decrypt_payload_v0(&ciphertext, &key, &hmac).unwrap();
+        assert_eq!(decrypted, plaintext.to_vec());
+
+        let mut bad_hmac = hmac;
+        bad_hmac[0] ^= 0xFF;
+        assert!(decrypt_payload_v0(&ciphertext, &key, &bad_hmac).is_none());
+    }
+
+    #[test]
+    fn encrypt_payload_v0_conversations_roundtrip() {
+        let plaintext = b"conversations style payload";
+        let (ciphertext, key, auth_tag, nonce) = encrypt_payload_v0_conversations(plaintext);
+        assert_eq!(key.len(), 16);
+        assert_eq!(auth_tag.len(), 16);
+        assert_eq!(nonce.len(), 12);
+
+        let decrypted =
+            decrypt_payload_v0_conversations(&ciphertext, &key, &auth_tag, &nonce).unwrap();
+        assert_eq!(decrypted, plaintext.to_vec());
+    }
 }

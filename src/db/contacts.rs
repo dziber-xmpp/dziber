@@ -246,3 +246,144 @@ pub fn load_contacts(
         .collect())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use diesel::prelude::*;
+
+    use crate::db::models::{DbAddressbook, DbContactsAccount};
+    use crate::db::schema::{addressbooks, contacts_accounts};
+    use crate::db::test_helpers::{connection, with_test_db};
+    use crate::models::contact_card::{Addressbook, ContactCard};
+
+    use super::{deserialize_list, serialize_list};
+
+    fn insert_contacts_account(account_id: &str) {
+        let mut conn = connection();
+        diesel::insert_into(contacts_accounts::table)
+            .values(&DbContactsAccount {
+                id: account_id.to_string(),
+                server_url: "https://contacts.example.com".to_string(),
+                username: "user".to_string(),
+                password: String::new(),
+                auth_mode: "basic".to_string(),
+                admin_user: None,
+                admin_pass: None,
+                last_sync: None,
+                contacts_protocol: "dav".to_string(),
+            })
+            .execute(&mut conn)
+            .unwrap();
+    }
+
+    fn insert_addressbook(id: &str, account_id: &str) {
+        let mut conn = connection();
+        diesel::insert_into(addressbooks::table)
+            .values(&DbAddressbook {
+                id: id.to_string(),
+                account_id: account_id.to_string(),
+                href: format!("/addressbooks/{}/", id),
+                name: format!("Book {}", id),
+                ctag: Some("1".to_string()),
+            })
+            .execute(&mut conn)
+            .unwrap();
+    }
+
+    fn sample_addressbook(id: &str, account_id: &str, name: &str) -> Addressbook {
+        Addressbook {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            href: format!("/addressbooks/{}/", id),
+            name: name.to_string(),
+            ctag: Some("1".to_string()),
+        }
+    }
+
+    fn sample_contact(id: &str, account_id: &str, book_id: &str, name: &str) -> ContactCard {
+        ContactCard {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            addressbook_id: book_id.to_string(),
+            href: format!("/contacts/{}", id),
+            etag: Some("etag".to_string()),
+            uid: format!("uid-{}", id),
+            display_name: name.to_string(),
+            first_name: "First".to_string(),
+            last_name: "Last".to_string(),
+            emails: vec![format!("{}@example.com", id), "other@example.com".to_string()],
+            phones: vec!["+123".to_string()],
+            org: "Org".to_string(),
+            note: "Note".to_string(),
+            raw_vcard: "VCARD".to_string(),
+        }
+    }
+
+    #[test]
+    fn serialize_list_roundtrip() {
+        let cases = [
+            Vec::<String>::new(),
+            vec!["one".to_string()],
+            vec!["a".to_string(), "b".to_string()],
+        ];
+        for original in &cases {
+            assert_eq!(deserialize_list(&serialize_list(original)), *original);
+        }
+    }
+
+    #[test]
+    fn save_and_load_addressbooks() {
+        let _guard = with_test_db();
+        insert_contacts_account("contacts-acc-1");
+
+        let books = vec![
+            sample_addressbook("b2", "contacts-acc-1", "Work"),
+            sample_addressbook("b1", "contacts-acc-1", "Personal"),
+        ];
+        super::save_addressbooks("contacts-acc-1", &books).unwrap();
+        let loaded = super::load_addressbooks("contacts-acc-1").unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "Personal");
+        assert_eq!(loaded[1].name, "Work");
+        assert_eq!(loaded, vec![
+            sample_addressbook("b1", "contacts-acc-1", "Personal"),
+            sample_addressbook("b2", "contacts-acc-1", "Work"),
+        ]);
+    }
+
+    #[test]
+    fn save_and_load_contacts() {
+        let _guard = with_test_db();
+        insert_contacts_account("contacts-acc-1");
+        insert_addressbook("book-1", "contacts-acc-1");
+
+        let contacts = vec![
+            sample_contact("c1", "contacts-acc-1", "book-1", "Alice"),
+            sample_contact("c2", "contacts-acc-1", "book-1", "Bob"),
+        ];
+        super::save_contacts("contacts-acc-1", &contacts).unwrap();
+        let loaded = super::load_contacts("contacts-acc-1", None).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].display_name, "Alice");
+        assert_eq!(loaded[1].display_name, "Bob");
+        assert_eq!(loaded, contacts);
+    }
+
+    #[test]
+    fn load_contacts_by_addressbook() {
+        let _guard = with_test_db();
+        insert_contacts_account("contacts-acc-1");
+        insert_addressbook("book-1", "contacts-acc-1");
+        insert_addressbook("book-2", "contacts-acc-1");
+
+        let contact_a = sample_contact("c1", "contacts-acc-1", "book-1", "Alice");
+        let contact_b = sample_contact("c2", "contacts-acc-1", "book-2", "Bob");
+        super::save_contacts("contacts-acc-1", &[contact_a, contact_b]).unwrap();
+
+        let loaded = super::load_contacts("contacts-acc-1", Some("book-1")).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "c1");
+    }
+}

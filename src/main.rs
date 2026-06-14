@@ -1,18 +1,6 @@
-mod call;
-mod audio;
-mod db;
-mod models;
-mod notify;
-mod omemo;
-mod personal_data;
-mod secrets;
-mod tray;
-mod ui;
-mod xmpp;
-
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use ui::app;
+use dziber::ui::app;
 
 fn init_tracing() {
     let log_path = dirs::home_dir()
@@ -66,11 +54,11 @@ fn main() -> iced::Result {
         init_tracing();
     }
     if purge_history {
-        if let Err(e) = crate::db::run_migrations() {
+        if let Err(e) = dziber::db::run_migrations() {
             eprintln!("Failed to initialize database migrations: {}", e);
             std::process::exit(1);
         }
-        match crate::db::purge_history() {
+        match dziber::db::purge_history() {
             Ok(count) => {
                 println!("Purged local message history: {} rows removed", count);
                 std::process::exit(0);

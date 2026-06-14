@@ -1619,23 +1619,19 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dziber"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
- "aes",
  "aes-gcm",
- "anyhow",
  "async-imap",
  "async-trait",
  "base64",
  "calcard",
- "cbc",
  "chrono",
  "diesel",
  "diesel_migrations",
  "dirs",
+ "dziber-omemo",
  "futures",
- "hkdf",
- "hmac",
  "iced",
  "image",
  "keyring",
@@ -1649,13 +1645,13 @@ dependencies = [
  "percent-encoding",
  "qrcodegen",
  "rand 0.8.6",
- "rand_core 0.6.4",
  "reqwest",
  "rfd",
  "roxmltree",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tokio-xmpp",
@@ -1663,10 +1659,34 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
- "vodozemac",
  "webpki-roots 0.26.11",
- "xeddsa",
  "xmpp-parsers",
+]
+
+[[package]]
+name = "dziber-omemo"
+version = "0.0.3"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "base64",
+ "cbc",
+ "hex",
+ "hkdf",
+ "hmac",
+ "minidom",
+ "rand 0.8.6",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "tracing",
+ "vodozemac",
+ "x25519-dalek",
+ "xeddsa",
+ "zeroize",
 ]
 
 [[package]]

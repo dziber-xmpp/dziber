@@ -419,3 +419,256 @@ pub fn delete_email(email_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     diesel::delete(emails.filter(id.eq(email_id))).execute(&mut conn)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use diesel::prelude::*;
+
+    use crate::db::models::DbMailAccount;
+    use crate::db::schema::mail_accounts;
+    use crate::db::test_helpers::{connection, with_test_db};
+    use crate::models::mail::{Email, EmailAddress, Mailbox, MailFilter};
+
+    use super::{deserialize_addresses, deserialize_list, serialize_addresses, serialize_list};
+
+    fn insert_mail_account(account_id: &str) {
+        let mut conn = connection();
+        diesel::insert_into(mail_accounts::table)
+            .values(&DbMailAccount {
+                id: account_id.to_string(),
+                server_url: "https://mail.example.com".to_string(),
+                username: "user".to_string(),
+                password: String::new(),
+                auth_mode: "basic".to_string(),
+                admin_user: None,
+                admin_pass: None,
+                last_sync: None,
+                mail_protocol: "jmap".to_string(),
+                imap_server: None,
+                imap_port: None,
+                smtp_server: None,
+                smtp_port: None,
+                security: None,
+                sieve_server: None,
+                sieve_port: None,
+                sieve_security: None,
+            })
+            .execute(&mut conn)
+            .unwrap();
+    }
+
+    fn sample_filter(id: &str, account_id: &str, name: &str, active: bool) -> MailFilter {
+        MailFilter {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            name: name.to_string(),
+            content: format!("content-{}", name),
+            is_active: active,
+        }
+    }
+
+    fn sample_mailbox(id: &str, account_id: &str, name: &str, sort_order: i32) -> Mailbox {
+        Mailbox {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            name: name.to_string(),
+            role: Some(name.to_lowercase()),
+            sort_order,
+            total_emails: 10,
+            unread_emails: 3,
+        }
+    }
+
+    fn sample_email(id: &str, account_id: &str, subject: &str, mailbox_id: &str) -> Email {
+        Email {
+            id: id.to_string(),
+            account_id: account_id.to_string(),
+            thread_id: format!("thread-{}", id),
+            mailbox_ids: vec![mailbox_id.to_string()],
+            from: vec![EmailAddress {
+                name: Some("Alice".to_string()),
+                email: "alice@example.com".to_string(),
+            }],
+            to: vec![
+                EmailAddress {
+                    name: None,
+                    email: "bob@example.com".to_string(),
+                },
+                EmailAddress {
+                    name: Some("Bob Smith".to_string()),
+                    email: "bob.smith@example.com".to_string(),
+                },
+            ],
+            cc: vec![],
+            bcc: vec![],
+            subject: subject.to_string(),
+            received_at: Utc::now(),
+            preview: "preview".to_string(),
+            body_text: Some("plain text".to_string()),
+            body_html: Some("<p>html</p>".to_string()),
+            keywords: vec!["$seen".to_string(), "$draft".to_string()],
+            has_attachments: true,
+            size: 12345,
+        }
+    }
+
+    #[test]
+    fn serialize_list_roundtrip() {
+        let cases = [
+            vec![],
+            vec!["one".to_string()],
+            vec!["one".to_string(), "two".to_string(), "three".to_string()],
+        ];
+        for original in &cases {
+            assert_eq!(deserialize_list(&serialize_list(original)), *original);
+        }
+    }
+
+    #[test]
+    fn serialize_list_preserves_separator_splitting() {
+        let original = vec!["a\x1fb".to_string(), "c".to_string()];
+        let serialized = serialize_list(&original);
+        let deserialized = deserialize_list(&serialized);
+        assert_eq!(deserialized, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn serialize_addresses_roundtrip() {
+        let addresses = vec![
+            EmailAddress {
+                name: Some("Alice".to_string()),
+                email: "alice@example.com".to_string(),
+            },
+            EmailAddress {
+                name: None,
+                email: "bob@example.com".to_string(),
+            },
+            EmailAddress {
+                name: Some("Charlie".to_string()),
+                email: "charlie@example.com".to_string(),
+            },
+        ];
+        let round_trip = deserialize_addresses(&serialize_addresses(&addresses));
+        assert_eq!(round_trip, addresses);
+    }
+
+    #[test]
+    fn serialize_addresses_empty() {
+        assert!(serialize_addresses(&[]).is_empty());
+        assert!(deserialize_addresses("").is_empty());
+    }
+
+    #[test]
+    fn save_and_load_filters() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        let filters = vec![
+            sample_filter("f1", "mail-acc-1", "Inbox", true),
+            sample_filter("f2", "mail-acc-1", "Spam", false),
+        ];
+        super::save_filters("mail-acc-1", &filters).unwrap();
+        let loaded = super::load_filters("mail-acc-1").unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded, filters);
+    }
+
+    #[test]
+    fn save_filters_replaces_existing() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        super::save_filters("mail-acc-1", &[sample_filter("f1", "mail-acc-1", "Old", true)])
+            .unwrap();
+        let replacements = vec![sample_filter("f2", "mail-acc-1", "New", false)];
+        super::save_filters("mail-acc-1", &replacements).unwrap();
+
+        let loaded = super::load_filters("mail-acc-1").unwrap();
+        assert_eq!(loaded, replacements);
+    }
+
+    #[test]
+    fn save_and_load_mailboxes() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        let mailboxes = vec![
+            sample_mailbox("mb2", "mail-acc-1", "Sent", 2),
+            sample_mailbox("mb1", "mail-acc-1", "Inbox", 1),
+        ];
+        super::save_mailboxes("mail-acc-1", &mailboxes).unwrap();
+        let loaded = super::load_mailboxes("mail-acc-1").unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "mb1");
+        assert_eq!(loaded[1].id, "mb2");
+    }
+
+    #[test]
+    fn save_and_load_emails() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        let emails = vec![
+            sample_email("e1", "mail-acc-1", "Hello", "inbox"),
+            sample_email("e2", "mail-acc-1", "Re: Hello", "inbox"),
+        ];
+        super::save_emails("mail-acc-1", &emails).unwrap();
+        let loaded = super::load_emails("mail-acc-1", None).unwrap();
+
+        assert_eq!(loaded.len(), 2);
+        let by_id: std::collections::HashMap<_, _> =
+            loaded.into_iter().map(|e| (e.id.clone(), e)).collect();
+        for original in &emails {
+            let loaded_email = by_id.get(&original.id).expect("email missing");
+            assert_eq!(original.mailbox_ids, loaded_email.mailbox_ids);
+            assert_eq!(original.from, loaded_email.from);
+            assert_eq!(original.to, loaded_email.to);
+            assert_eq!(original.subject, loaded_email.subject);
+            assert_eq!(original.keywords, loaded_email.keywords);
+            assert_eq!(original.size, loaded_email.size);
+        }
+    }
+
+    #[test]
+    fn load_emails_by_mailbox() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        let inbox_email = sample_email("e1", "mail-acc-1", "Inbox mail", "mailbox-a");
+        let sent_email = sample_email("e2", "mail-acc-1", "Sent mail", "mailbox-b");
+        super::save_emails("mail-acc-1", &[inbox_email, sent_email]).unwrap();
+
+        let loaded = super::load_emails("mail-acc-1", Some("mailbox-a")).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "e1");
+    }
+
+    #[test]
+    fn update_email_keywords() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        let email = sample_email("e1", "mail-acc-1", "Subject", "inbox");
+        super::save_emails("mail-acc-1", &[email]).unwrap();
+
+        super::update_email_keywords("e1", &["$seen".to_string(), "$flagged".to_string()])
+            .unwrap();
+        let loaded = super::load_emails("mail-acc-1", None).unwrap();
+        assert_eq!(loaded[0].keywords, vec!["$seen".to_string(), "$flagged".to_string()]);
+    }
+
+    #[test]
+    fn delete_email() {
+        let _guard = with_test_db();
+        insert_mail_account("mail-acc-1");
+
+        let email = sample_email("e1", "mail-acc-1", "Subject", "inbox");
+        super::save_emails("mail-acc-1", &[email]).unwrap();
+        super::delete_email("e1").unwrap();
+
+        let loaded = super::load_emails("mail-acc-1", None).unwrap();
+        assert!(loaded.is_empty());
+    }
+}

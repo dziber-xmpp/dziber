@@ -1,4 +1,4 @@
-use tokio_xmpp::minidom::Element;
+use minidom::Element;
 
 use super::{NS_OMEMO_V0, nc};
 
@@ -51,4 +51,49 @@ pub fn build_device_list_element_v0(devices: &[Device]) -> Element {
         el.append_child(builder.build());
     }
     el
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_and_parse_device_list_roundtrip() {
+        let devices = vec![
+            Device {
+                id: 1,
+                label: Some("phone".to_string()),
+                labelsig: None,
+            },
+            Device {
+                id: 2,
+                label: None,
+                labelsig: Some("sig".to_string()),
+            },
+            Device {
+                id: 3,
+                label: Some("desktop".to_string()),
+                labelsig: Some("abc".to_string()),
+            },
+        ];
+        let element = build_device_list_element_v0(&devices);
+        assert_eq!(element.name(), "list");
+        assert_eq!(element.ns(), NS_OMEMO_V0);
+
+        let parsed = parse_device_list(&element).unwrap();
+        assert_eq!(parsed.devices, devices);
+    }
+
+    #[test]
+    fn empty_device_list_roundtrip() {
+        let element = build_device_list_element_v0(&[]);
+        let parsed = parse_device_list(&element).unwrap();
+        assert!(parsed.devices.is_empty());
+    }
+
+    #[test]
+    fn parse_device_list_wrong_ns_returns_none() {
+        let element = Element::builder("list", "wrong:ns").build();
+        assert!(parse_device_list(&element).is_none());
+    }
 }

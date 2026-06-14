@@ -75,3 +75,51 @@ impl JmapClient {
         headers
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::account::{AuthMode, MailAccount, MailProtocol};
+
+    fn test_account() -> MailAccount {
+        MailAccount {
+            id: "acc-1".to_string(),
+            server_url: "https://example.com".to_string(),
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+            auth_mode: AuthMode::Basic,
+            mail_protocol: MailProtocol::Jmap,
+            sieve_config: None,
+        }
+    }
+
+    #[test]
+    fn jmap_client_new_sets_fields() {
+        let account = test_account();
+        let client = JmapClient::new(&account);
+        assert_eq!(client.account_id, "acc-1");
+        assert_eq!(client.base_url, "https://example.com");
+        assert!(client.auth_header.starts_with("Basic "));
+    }
+
+    #[test]
+    fn extract_response_finds_method_by_name() {
+        let client = JmapClient::new(&test_account());
+        let data = serde_json::json!({
+            "methodResponses": [
+                ["Mailbox/get", { "list": [] }, "0"],
+                ["Email/get", { "notFound": [] }, "1"]
+            ]
+        });
+        let args = client.extract_response(&data, "Email/get").unwrap();
+        assert!(args.get("notFound").is_some());
+        assert!(client.extract_response(&data, "Thread/get").is_none());
+    }
+
+    #[test]
+    fn extract_response_missing_or_invalid() {
+        let client = JmapClient::new(&test_account());
+        assert!(client.extract_response(&serde_json::json!({}), "x").is_none());
+        assert!(client.extract_response(&serde_json::json!({ "methodResponses": "bad" }), "x").is_none());
+    }
+}
