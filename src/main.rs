@@ -81,8 +81,6 @@ fn main() -> iced::Result {
             }
         }
     }
-    crate::tray::init_tray();
-
     iced::application(app::boot, app::update, app::view)
         .subscription(app::subscription)
         .theme(app::theme)

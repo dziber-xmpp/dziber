@@ -352,6 +352,10 @@ fn load_personal_data_from_db(state: &mut AppState) {
 
 pub fn boot() -> (AppState, Task<Message>) {
     let state = AppState::default();
+
+    crate::tray::set_unread_count(total_unread_count(&state));
+    crate::tray::init_tray();
+
     let task = if state.mail_account.is_some()
         || state.contacts_account.is_some()
         || state.calendar_account.is_some()
@@ -842,8 +846,12 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::WindowCloseRequested(id) => {
             state.main_window_id = Some(id);
-            state.window_hidden_to_tray = true;
-            window::set_mode(id, window::Mode::Hidden)
+            if has_unsaved_changes(state) {
+                state.show_unsaved_quit_confirm = true;
+                Task::none()
+            } else {
+                std::process::exit(0)
+            }
         }
         Message::TrayShowRequested => {
             if let Some(id) = state.main_window_id {

@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 
 #[derive(Debug, Clone, Copy)]
 pub enum TrayEvent {
@@ -7,21 +7,20 @@ pub enum TrayEvent {
     QuitRequested,
 }
 
-static TRAY_EVENTS: OnceLock<Mutex<std::sync::mpsc::Receiver<TrayEvent>>> = OnceLock::new();
 static UNREAD_COUNT: AtomicU32 = AtomicU32::new(0);
+static EVENT_RX: OnceLock<Mutex<mpsc::Receiver<TrayEvent>>> = OnceLock::new();
 
+/// Initialize the platform tray icon.
+///
+/// On Linux/BSD this registers a D-Bus StatusNotifierItem via `ksni`.
+/// On other platforms it is a no-op.
 pub fn init_tray() {
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    ))]
-    gtk_tray::init_tray_impl();
+    sni_tray::init_tray_impl();
 }
 
+/// Poll for a tray event that should be handled by the UI event loop.
 pub fn try_recv_event() -> Option<TrayEvent> {
-    let rx = TRAY_EVENTS.get()?;
+    let rx = EVENT_RX.get()?;
     let guard = rx.lock().ok()?;
     guard.try_recv().ok()
 }
@@ -29,6 +28,7 @@ pub fn try_recv_event() -> Option<TrayEvent> {
 /// Update the unread-message badge shown on the tray icon.
 pub fn set_unread_count(count: u32) {
     UNREAD_COUNT.store(count, Ordering::Relaxed);
+    sni_tray::refresh_icon();
 }
 
 #[cfg(any(
@@ -37,240 +37,244 @@ pub fn set_unread_count(count: u32) {
     target_os = "openbsd",
     target_os = "netbsd"
 ))]
-mod gtk_tray {
-    use std::f64::consts::PI;
-    use std::os::raw::c_void;
+mod sni_tray {
+    use super::{TrayEvent, EVENT_RX, UNREAD_COUNT};
+    use image::{Rgba, RgbaImage};
+    use ksni::TrayMethods;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Mutex, OnceLock, mpsc};
 
-    use gtk::glib::prelude::*;
-    use gtk::prelude::*;
+    static HANDLE: OnceLock<ksni::Handle<DziberTray>> = OnceLock::new();
 
-    use glib_sys::{gboolean, gpointer};
-    use gobject_sys::{GObject, g_signal_connect_data};
-    use gtk_sys::{
-        GtkMenu, GtkMenuItem, GtkMenuShell, GtkStatusIcon, gtk_init_check, gtk_main,
-        gtk_menu_item_new_with_label, gtk_menu_new, gtk_menu_popup, gtk_menu_shell_append,
-        gtk_status_icon_new, gtk_status_icon_set_from_pixbuf, gtk_status_icon_set_tooltip_text,
-        gtk_status_icon_set_visible, gtk_widget_show_all,
-    };
-
-    use super::{TRAY_EVENTS, TrayEvent, UNREAD_COUNT};
-
-    /// Render the themed icon with a red unread-count badge.
-    fn render_badge_pixbuf(count: u32) -> Option<gtk::gdk_pixbuf::Pixbuf> {
-        let theme = gtk::IconTheme::default()?;
-        let pixbuf = theme
-            .load_icon("mail-message-new", 24, gtk::IconLookupFlags::empty())
-            .ok()
-            .flatten()?;
-
-        let width = pixbuf.width();
-        let height = pixbuf.height();
-        let surface =
-            gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, width, height).ok()?;
-        let cr = gtk::cairo::Context::new(&surface).ok()?;
-
-        cr.set_source_pixbuf(&pixbuf, 0.0, 0.0);
-        cr.paint().ok()?;
-
-        if count > 0 {
-            let radius = (width.min(height) as f64) * 0.28;
-            let cx = width as f64 - radius - 1.0;
-            let cy = radius + 1.0;
-
-            // Red badge circle.
-            cr.set_source_rgb(0.9, 0.1, 0.1);
-            cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
-            cr.fill().ok()?;
-
-            // White count text.
-            let text = if count > 99 {
-                "99+".to_string()
-            } else {
-                count.to_string()
-            };
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.select_font_face(
-                "Sans",
-                gtk::cairo::FontSlant::Normal,
-                gtk::cairo::FontWeight::Bold,
-            );
-            cr.set_font_size(radius * 1.1);
-            let ext = cr.text_extents(&text).ok()?;
-            cr.move_to(
-                cx - ext.width / 2.0 - ext.x_bearing,
-                cy + ext.height / 2.0 - ext.y_bearing,
-            );
-            cr.show_text(&text).ok()?;
-        }
-
-        gtk::gdk::pixbuf_get_from_surface(&surface, 0, 0, width, height)
-    }
-
-    extern "C" fn on_tray_activate(_tray: *mut GtkStatusIcon, user_data: gpointer) {
-        let sender = unsafe { &*(user_data as *const std::sync::mpsc::Sender<TrayEvent>) };
-        let _ = sender.send(TrayEvent::ShowRequested);
-    }
-
-    extern "C" fn on_popup_menu(
-        _tray: *mut GtkStatusIcon,
-        button: u32,
-        activate_time: u32,
-        user_data: gpointer,
-    ) {
-        let menu = user_data as *mut GtkMenu;
-        unsafe {
-            gtk_menu_popup(
-                menu,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                None,
-                std::ptr::null_mut(),
-                button,
-                activate_time,
-            );
-        }
-    }
-
-    extern "C" fn on_show_activate(_item: *mut GtkMenuItem, user_data: gpointer) {
-        let sender = unsafe { &*(user_data as *const std::sync::mpsc::Sender<TrayEvent>) };
-        let _ = sender.send(TrayEvent::ShowRequested);
-    }
-
-    extern "C" fn on_quit_activate(_item: *mut GtkMenuItem, user_data: gpointer) {
-        let sender = unsafe { &*(user_data as *const std::sync::mpsc::Sender<TrayEvent>) };
-        let _ = sender.send(TrayEvent::QuitRequested);
-    }
-
-    extern "C" fn on_refresh_icon(tray: gpointer) -> gboolean {
-        let count = UNREAD_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        if let Some(pb) = render_badge_pixbuf(count) {
-            unsafe {
-                gtk_status_icon_set_from_pixbuf(tray as *mut GtkStatusIcon, pb.as_ptr());
-            }
-        }
-        1 // keep repeating
-    }
-
-    pub fn init_tray_impl() {
-        if TRAY_EVENTS.get().is_some() {
+    pub(super) fn init_tray_impl() {
+        if EVENT_RX.get().is_some() {
             return;
         }
 
-        let (event_tx, event_rx) = std::sync::mpsc::channel::<TrayEvent>();
-        let _ = TRAY_EVENTS.set(std::sync::Mutex::new(event_rx));
+        let (tx, rx) = mpsc::channel();
+        let _ = EVENT_RX.set(Mutex::new(rx));
 
-        std::thread::spawn(move || {
-            let ok: gboolean =
-                unsafe { gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut()) };
-            if ok == 0 {
-                tracing::info!("Failed to init GTK tray");
-                return;
+        let tray_impl = DziberTray { events: tx };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => match runtime.block_on(tray_impl.spawn()) {
+                Ok(handle) => {
+                    let _ = HANDLE.set(handle);
+                }
+                Err(error) => {
+                    tracing::info!("Failed to create SNI tray icon: {error}");
+                }
+            },
+            Err(error) => {
+                tracing::info!("No Tokio runtime available for SNI tray: {error}");
             }
+        }
+    }
 
-            let tooltip = std::ffi::CString::new("Dziber").expect("tooltip");
-            let show_label = std::ffi::CString::new("Show Dziber").expect("show label");
-            let quit_label = std::ffi::CString::new("Quit Dziber").expect("quit label");
-            let activate_sig = std::ffi::CString::new("activate").expect("activate signal");
-            let popup_sig = std::ffi::CString::new("popup-menu").expect("popup signal");
+    pub(super) fn refresh_icon() {
+        if let Some(handle) = HANDLE.get() {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                let _ = handle.update(|_| {}).await;
+            });
+        }
+    }
 
-            let show_tx_box = Box::new(event_tx.clone());
-            let quit_tx_box = Box::new(event_tx.clone());
-            let tray_tx_box = Box::new(event_tx.clone());
+    struct DziberTray {
+        events: mpsc::Sender<TrayEvent>,
+    }
 
-            let tray = unsafe { gtk_status_icon_new() };
-            if tray.is_null() {
-                tracing::info!("Failed to create GTK status icon");
-                return;
+    impl ksni::Tray for DziberTray {
+        fn id(&self) -> String {
+            "dziber".into()
+        }
+
+        fn title(&self) -> String {
+            format!("Dziber - {} unread", UNREAD_COUNT.load(Ordering::Relaxed))
+        }
+
+        fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+            vec![ksni_icon(UNREAD_COUNT.load(Ordering::Relaxed))]
+        }
+
+        fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+            use ksni::menu::{MenuItem, StandardItem};
+
+            vec![
+                StandardItem {
+                    label: "Show Dziber".into(),
+                    activate: Box::new(|this: &mut DziberTray| {
+                        let _ = this.events.send(TrayEvent::ShowRequested);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+                MenuItem::Separator,
+                StandardItem {
+                    label: "Quit Dziber".into(),
+                    activate: Box::new(|this: &mut DziberTray| {
+                        let _ = this.events.send(TrayEvent::QuitRequested);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            ]
+        }
+
+        fn activate(&mut self, _x: i32, _y: i32) {
+            let _ = self.events.send(TrayEvent::ShowRequested);
+        }
+    }
+
+    fn ksni_icon(count: u32) -> ksni::Icon {
+        let (rgba, width, height) = render_rgba(count);
+        let mut data = rgba;
+
+        // ksni expects ARGB data; `image` gives RGBA.
+        for pixel in data.chunks_exact_mut(4) {
+            pixel.rotate_right(1);
+        }
+
+        ksni::Icon {
+            width: width as i32,
+            height: height as i32,
+            data,
+        }
+    }
+
+    fn render_rgba(count: u32) -> (Vec<u8>, u32, u32) {
+        const SIZE: u32 = 64;
+        let mut img = RgbaImage::from_pixel(SIZE, SIZE, Rgba([46, 134, 222, 255]));
+
+        draw_envelope(&mut img);
+
+        if count > 0 {
+            draw_badge(&mut img, count.min(99));
+        }
+
+        (img.into_raw(), SIZE, SIZE)
+    }
+
+    fn draw_envelope(img: &mut RgbaImage) {
+        let white = Rgba([255, 255, 255, 255]);
+        let left = 12i32;
+        let right = 52i32;
+        let top = 20i32;
+        let bottom = 44i32;
+
+        // Envelope body.
+        for y in top..=bottom {
+            for x in left..=right {
+                img.put_pixel(x as u32, y as u32, white);
             }
-            unsafe {
-                gtk_status_icon_set_visible(tray, 1);
-                gtk_status_icon_set_tooltip_text(tray, tooltip.as_ptr());
-            }
+        }
 
-            // Set initial icon.
-            let count = UNREAD_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-            if let Some(pb) = render_badge_pixbuf(count) {
-                unsafe {
-                    gtk_status_icon_set_from_pixbuf(tray, pb.as_ptr());
+        // Top flap outline.
+        draw_line(img, left, top, 32, 34, Rgba([46, 134, 222, 255]));
+        draw_line(img, 32, 34, right, top, Rgba([46, 134, 222, 255]));
+    }
+
+    fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgba<u8>) {
+        let dx = (x1 - x0).abs();
+        let dy = (y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx - dy;
+        let mut x = x0;
+        let mut y = y0;
+
+        loop {
+            if x >= 0 && y >= 0 && x < img.width() as i32 && y < img.height() as i32 {
+                img.put_pixel(x as u32, y as u32, color);
+            }
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 > -dy {
+                err -= dy;
+                x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    fn draw_badge(img: &mut RgbaImage, count: u32) {
+        let red = Rgba([220, 53, 69, 255]);
+        let white = Rgba([255, 255, 255, 255]);
+        let radius = 14u32;
+        let cx = img.width() - radius - 2;
+        let cy = radius + 2;
+
+        for y in cy.saturating_sub(radius)..(cy + radius).min(img.height()) {
+            for x in cx.saturating_sub(radius)..(cx + radius).min(img.width()) {
+                let dx = x as i32 - cx as i32;
+                let dy = y as i32 - cy as i32;
+                if dx * dx + dy * dy <= (radius * radius) as i32 {
+                    img.put_pixel(x, y, red);
                 }
             }
+        }
 
-            let menu = unsafe { gtk_menu_new() };
-            if menu.is_null() {
-                tracing::info!("Failed to create GTK tray menu");
-                return;
-            }
+        let text = format!("{count}");
+        let char_width = 4i32;
+        let char_height = 7i32;
+        let total_width = text.len() as i32 * char_width + (text.len() as i32 - 1).max(0);
+        let start_x = cx as i32 - total_width / 2;
+        let start_y = cy as i32 - char_height / 2;
 
-            let show_item = unsafe { gtk_menu_item_new_with_label(show_label.as_ptr()) };
-            let quit_item = unsafe { gtk_menu_item_new_with_label(quit_label.as_ptr()) };
-            unsafe {
-                gtk_menu_shell_append(menu as *mut GtkMenuShell, show_item as *mut GtkMenuItem);
-                gtk_menu_shell_append(menu as *mut GtkMenuShell, quit_item as *mut GtkMenuItem);
-                gtk_widget_show_all(menu);
-            }
-
-            unsafe {
-                g_signal_connect_data(
-                    tray as *mut GObject,
-                    activate_sig.as_ptr(),
-                    Some(std::mem::transmute::<
-                        extern "C" fn(*mut GtkStatusIcon, gpointer),
-                        unsafe extern "C" fn(),
-                    >(on_tray_activate)),
-                    Box::into_raw(tray_tx_box) as *mut c_void,
-                    None,
-                    0,
-                );
-
-                g_signal_connect_data(
-                    tray as *mut GObject,
-                    popup_sig.as_ptr(),
-                    Some(std::mem::transmute::<
-                        extern "C" fn(*mut GtkStatusIcon, u32, u32, gpointer),
-                        unsafe extern "C" fn(),
-                    >(on_popup_menu)),
-                    menu as *mut c_void,
-                    None,
-                    0,
-                );
-
-                g_signal_connect_data(
-                    show_item as *mut GObject,
-                    activate_sig.as_ptr(),
-                    Some(std::mem::transmute::<
-                        extern "C" fn(*mut GtkMenuItem, gpointer),
-                        unsafe extern "C" fn(),
-                    >(on_show_activate)),
-                    Box::into_raw(show_tx_box) as *mut c_void,
-                    None,
-                    0,
-                );
-
-                g_signal_connect_data(
-                    quit_item as *mut GObject,
-                    activate_sig.as_ptr(),
-                    Some(std::mem::transmute::<
-                        extern "C" fn(*mut GtkMenuItem, gpointer),
-                        unsafe extern "C" fn(),
-                    >(on_quit_activate)),
-                    Box::into_raw(quit_tx_box) as *mut c_void,
-                    None,
-                    0,
-                );
-            }
-
-            unsafe {
-                glib_sys::g_timeout_add(
-                    500,
-                    Some(std::mem::transmute::<
-                        extern "C" fn(gpointer) -> gboolean,
-                        unsafe extern "C" fn(gpointer) -> gboolean,
-                    >(on_refresh_icon)),
-                    tray as gpointer,
-                );
-            }
-
-            unsafe { gtk_main() };
-        });
+        for (i, ch) in text.chars().enumerate() {
+            let digit = ch.to_digit(10).unwrap_or(0) as usize;
+            let offset_x = start_x + i as i32 * (char_width + 1);
+            draw_digit(img, digit, offset_x, start_y, white);
+        }
     }
+
+    fn draw_digit(img: &mut RgbaImage, digit: usize, x: i32, y: i32, color: Rgba<u8>) {
+        #[rustfmt::skip]
+        const FONT: [[u8; 7]; 10] = [
+            [15, 9, 9, 9, 9, 9, 15],
+            [1, 3, 1, 1, 1, 1, 7],
+            [15, 1, 15, 8, 8, 8, 15],
+            [15, 1, 15, 1, 1, 1, 15],
+            [9, 9, 15, 1, 1, 1, 1],
+            [15, 8, 15, 1, 1, 1, 15],
+            [15, 8, 15, 9, 9, 9, 15],
+            [15, 1, 1, 2, 2, 4, 4],
+            [15, 9, 15, 9, 9, 9, 15],
+            [15, 9, 15, 1, 1, 1, 15],
+        ];
+
+        let pattern = FONT.get(digit).copied().unwrap_or(FONT[0]);
+        for (row, bits) in pattern.iter().enumerate() {
+            for col in 0..4 {
+                if (bits >> (3 - col)) & 1 == 1 {
+                    let px = x + col;
+                    let py = y + row as i32;
+                    if px >= 0 && py >= 0 && px < img.width() as i32 && py < img.height() as i32 {
+                        img.put_pixel(px as u32, py as u32, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+)))]
+mod sni_tray {
+    use super::{EVENT_RX, Mutex, mpsc};
+
+    pub(super) fn init_tray_impl() {
+        let _ = EVENT_RX.set(Mutex::new(mpsc::channel().1));
+    }
+
+    pub(super) fn refresh_icon() {}
 }

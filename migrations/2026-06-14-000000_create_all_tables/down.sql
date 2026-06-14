@@ -1,5 +1,3 @@
--- Revert the consolidated schema by dropping all tables.
-
 DROP TABLE IF EXISTS filters;
 DROP TABLE IF EXISTS tasks;
 DROP TABLE IF EXISTS events;
