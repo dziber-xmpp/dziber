@@ -74,7 +74,7 @@ fn main() -> iced::Result {
         .theme(app::theme)
         .title("Dziber - XMPP Client")
         .window(iced::window::Settings {
-            visible: false,
+            visible: true,
             exit_on_close_request: false,
             ..Default::default()
         })

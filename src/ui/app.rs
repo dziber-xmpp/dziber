@@ -256,7 +256,7 @@ fn update_tray_unread(state: &AppState) {
 impl Default for AppState {
     fn default() -> Self {
         let mut state = Self {
-            screen: Screen::Login,
+            screen: Screen::Main,
             account: None,
             jid_input: String::new(),
             password_input: String::new(),
@@ -297,7 +297,7 @@ impl Default for AppState {
             if let Some(personal) = config.personal_data.as_ref() {
                 let _ = migrate_personal_data_config(personal);
             }
-            state.account = Some(config);
+            // Do not auto-connect: account is set only after a successful login.
         }
 
         load_personal_data_accounts(&mut state);
@@ -389,15 +389,8 @@ pub fn boot() -> (AppState, Task<Message>) {
     crate::tray::set_unread_count(total_unread_count(&state));
     crate::tray::init_tray();
 
-    let task = if state.mail_account.is_some()
-        || state.contacts_account.is_some()
-        || state.calendar_account.is_some()
-    {
-        Task::done(Message::SyncPersonalData)
-    } else {
-        Task::none()
-    };
-    (state, task)
+    // Services authenticate/sync on demand; do not auto-sync at startup.
+    (state, Task::none())
 }
 
 pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
@@ -1064,24 +1057,11 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 if let Err(e) = crate::db::run_migrations() {
                     tracing::info!("Database migration failed: {}", e);
                 }
-                if let Some(account) = &state.account {
-                    let jid = account.jid.clone();
-                    let password = account.password.clone();
-                    if let Some(ref mut s) = state.xmpp_sender {
-                        let mut s = s.clone();
-                        return Task::perform(
-                            async move {
-                                let _ = s.send(XmppCommand::Connect { jid, password }).await;
-                            },
-                            |_| Message::JidChanged(String::new()),
-                        )
-                        .discard();
-                    }
-                }
+                // Connection is now explicit; the app starts on the main screen
+                // and the user clicks Connect (or a service syncs on demand).
                 Task::none()
             }
             XmppEvent::Connected { jid } => {
-                state.screen = Screen::Main;
                 state.connection_status = format!("Connected as {}", jid);
                 if let Some(ref mut account) = state.account {
                     account.status = ConnectionStatus::Online;
@@ -1146,7 +1126,6 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 if let Some(ref mut account) = state.account {
                     account.status = ConnectionStatus::Offline;
                 }
-                state.screen = Screen::Login;
                 state.contacts.clear();
                 state.selected_conversation = None;
                 state.omemo_enabled = false;
@@ -1163,9 +1142,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             }
             XmppEvent::ConnectionError(err) => {
                 state.connection_status = format!("Error: {}", err);
-                if state.screen == Screen::Login {
-                    state.login_error = Some(err);
-                }
+                state.login_error = Some(err);
                 if let Some(ref mut account) = state.account {
                     account.status = ConnectionStatus::Error(state.connection_status.clone());
                 }
@@ -2694,15 +2671,29 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             })
             .on_press(Message::ToggleOmemoQr);
 
+            let is_connected = matches!(
+                state.account.as_ref().map(|a| &a.status),
+                Some(ConnectionStatus::Online)
+            );
+            let connection_button: Element<'_, Message> = if is_connected {
+                button("Disconnect")
+                    .on_press(Message::LogoutClicked)
+                    .padding(4)
+                    .into()
+            } else {
+                button("Connect")
+                    .on_press(Message::LoginClicked)
+                    .padding(4)
+                    .into()
+            };
+
             let toolbar = row![
                 text("Dziber").size(14),
                 Space::new().width(Length::Fill),
                 qr_button,
                 omemo_button,
                 text(&state.connection_status).size(11),
-                button("Disconnect")
-                    .on_press(Message::LogoutClicked)
-                    .padding(4),
+                connection_button,
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -2724,26 +2715,53 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
             let content: Element<'_, Message> = match state.current_tab {
                 Tab::Chat => {
-                    let sidebar = conversation_list::view(
-                        &state.conversations,
-                        &state.avatar_handles,
-                        state.selected_conversation,
-                    );
-                    let selected_conv = state
-                        .selected_conversation
-                        .and_then(|idx| state.conversations.get(idx));
-                    let chat_view = chat::view(
-                        selected_conv,
-                        &state.draft,
-                        &state.chat_message_bodies,
-                        &state.avatar_handles,
-                        state.active_call_with.as_deref(),
-                    );
-                    row![sidebar, chat_view].spacing(0).into()
+                    if !is_connected {
+                        login::view(
+                            &state.jid_input,
+                            &state.password_input,
+                            &state.login_error,
+                            &state.connection_status,
+                        )
+                    } else {
+                        let sidebar = conversation_list::view(
+                            &state.conversations,
+                            &state.avatar_handles,
+                            state.selected_conversation,
+                        );
+                        let selected_conv = state
+                            .selected_conversation
+                            .and_then(|idx| state.conversations.get(idx));
+                        let chat_view = chat::view(
+                            selected_conv,
+                            &state.draft,
+                            &state.chat_message_bodies,
+                            &state.avatar_handles,
+                            state.active_call_with.as_deref(),
+                        );
+                        row![sidebar, chat_view].spacing(0).into()
+                    }
                 }
-                Tab::Mail => mail::view(&state.mail_state),
-                Tab::Contacts => contacts::view(&state.contacts_state),
-                Tab::Calendar => calendar::view(&state.calendar_state),
+                Tab::Mail => {
+                    if state.mail_account.is_none() {
+                        empty_state("No mail account configured.\nGo to Settings → Mail to add one.")
+                    } else {
+                        mail::view(&state.mail_state)
+                    }
+                }
+                Tab::Contacts => {
+                    if state.contacts_account.is_none() {
+                        empty_state("No contacts account configured.\nGo to Settings → Contacts to add one.")
+                    } else {
+                        contacts::view(&state.contacts_state)
+                    }
+                }
+                Tab::Calendar => {
+                    if state.calendar_account.is_none() {
+                        empty_state("No calendar account configured.\nGo to Settings → Calendar to add one.")
+                    } else {
+                        calendar::view(&state.calendar_state)
+                    }
+                }
                 Tab::Settings => settings::view(&state.settings_state),
             };
 
@@ -2806,6 +2824,15 @@ fn tab_button<'a>(label: &'a str, tab: Tab, state: &AppState) -> iced::Element<'
     } else {
         btn.into()
     }
+}
+
+fn empty_state<'a>(message: &'a str) -> Element<'a, Message> {
+    container(text(message).size(14).align_x(Alignment::Center))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 pub fn subscription(_state: &AppState) -> Subscription<Message> {
