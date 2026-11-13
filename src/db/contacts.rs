@@ -3,7 +3,9 @@ use diesel::prelude::*;
 use crate::db::establish_connection;
 use crate::db::models::{DbAddressbook, DbContact, DbContactsAccount};
 
-use crate::models::account::{AuthMode, ContactsAccount, dav_or_jmap_from_string, dav_or_jmap_to_string};
+use crate::models::account::{
+    AuthMode, ContactsAccount, dav_or_jmap_from_string, dav_or_jmap_to_string,
+};
 use crate::models::contact_card::{Addressbook, ContactCard};
 
 fn serialize_list(list: &[String]) -> String {
@@ -88,7 +90,8 @@ pub fn load_accounts() -> Result<Vec<ContactsAccount>, Box<dyn std::error::Error
             let auth = match a.auth_mode.as_str() {
                 "stalwart" => {
                     let admin_user = a.admin_user.unwrap_or_default();
-                    let admin_pass = if a.admin_pass.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                    let admin_pass = if a.admin_pass.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                    {
                         crate::secrets::get_password(crate::secrets::SERVICE_CONTACTS_ADMIN, &a.id)
                             .ok()
                             .flatten()
@@ -96,7 +99,10 @@ pub fn load_accounts() -> Result<Vec<ContactsAccount>, Box<dyn std::error::Error
                     } else {
                         a.admin_pass.unwrap_or_default()
                     };
-                    AuthMode::StalwartImpersonation { admin_user, admin_pass }
+                    AuthMode::StalwartImpersonation {
+                        admin_user,
+                        admin_pass,
+                    }
                 }
                 _ => AuthMode::Basic,
             };
@@ -246,7 +252,6 @@ pub fn load_contacts(
         .collect())
 }
 
-
 #[cfg(test)]
 mod tests {
     use diesel::prelude::*;
@@ -311,7 +316,10 @@ mod tests {
             display_name: name.to_string(),
             first_name: "First".to_string(),
             last_name: "Last".to_string(),
-            emails: vec![format!("{}@example.com", id), "other@example.com".to_string()],
+            emails: vec![
+                format!("{}@example.com", id),
+                "other@example.com".to_string(),
+            ],
             phones: vec!["+123".to_string()],
             org: "Org".to_string(),
             note: "Note".to_string(),
@@ -346,10 +354,13 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].name, "Personal");
         assert_eq!(loaded[1].name, "Work");
-        assert_eq!(loaded, vec![
-            sample_addressbook("b1", "contacts-acc-1", "Personal"),
-            sample_addressbook("b2", "contacts-acc-1", "Work"),
-        ]);
+        assert_eq!(
+            loaded,
+            vec![
+                sample_addressbook("b1", "contacts-acc-1", "Personal"),
+                sample_addressbook("b2", "contacts-acc-1", "Work"),
+            ]
+        );
     }
 
     #[test]

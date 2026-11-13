@@ -3,15 +3,17 @@ use std::path::PathBuf;
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use chrono::Datelike;
 use futures::channel::mpsc;
 use futures::sink::SinkExt;
-use chrono::Datelike;
 use iced::widget::operation;
 use iced::widget::{Column, Space, button, container, image, row, text, text_editor};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme, stream, window};
 
 use crate::audio::{AudioCallState, AudioEngine};
-use crate::models::account::{Account, CalendarAccount, ConnectionStatus, ContactsAccount, MailAccount};
+use crate::models::account::{
+    Account, CalendarAccount, ConnectionStatus, ContactsAccount, MailAccount,
+};
 use crate::models::contact::Contact;
 use crate::models::contact_card::ContactCard;
 use crate::models::conversation::Conversation;
@@ -308,7 +310,9 @@ impl Default for AppState {
 }
 
 fn load_personal_data_accounts(state: &mut AppState) {
-    state.mail_account = crate::db::mail::load_accounts().ok().and_then(|v| v.into_iter().next());
+    state.mail_account = crate::db::mail::load_accounts()
+        .ok()
+        .and_then(|v| v.into_iter().next());
     state.contacts_account = crate::db::contacts::load_accounts()
         .ok()
         .and_then(|v| v.into_iter().next());
@@ -362,23 +366,25 @@ fn migrate_personal_data_config(
 
 fn load_personal_data_from_db(state: &mut AppState) {
     if let Some(account) = state.mail_account.as_ref() {
-        state.mail_state.mailboxes = crate::db::mail::load_mailboxes(&account.id).unwrap_or_default();
-        state.mail_state.emails = crate::db::mail::load_emails(&account.id, None).unwrap_or_default();
+        state.mail_state.mailboxes =
+            crate::db::mail::load_mailboxes(&account.id).unwrap_or_default();
+        state.mail_state.emails =
+            crate::db::mail::load_emails(&account.id, None).unwrap_or_default();
         state.mail_state.filters = crate::db::mail::load_filters(&account.id).unwrap_or_default();
     }
     if let Some(account) = state.contacts_account.as_ref() {
-        state.contacts_state.addressbooks = crate::db::contacts::load_addressbooks(&account.id)
-            .unwrap_or_default();
-        state.contacts_state.contacts = crate::db::contacts::load_contacts(&account.id, None)
-            .unwrap_or_default();
+        state.contacts_state.addressbooks =
+            crate::db::contacts::load_addressbooks(&account.id).unwrap_or_default();
+        state.contacts_state.contacts =
+            crate::db::contacts::load_contacts(&account.id, None).unwrap_or_default();
     }
     if let Some(account) = state.calendar_account.as_ref() {
-        state.calendar_state.calendars = crate::db::calendar::load_calendars(&account.id)
-            .unwrap_or_default();
-        state.calendar_state.events = crate::db::calendar::load_events(&account.id, None)
-            .unwrap_or_default();
-        state.calendar_state.tasks = crate::db::calendar::load_tasks(&account.id, None)
-            .unwrap_or_default();
+        state.calendar_state.calendars =
+            crate::db::calendar::load_calendars(&account.id).unwrap_or_default();
+        state.calendar_state.events =
+            crate::db::calendar::load_events(&account.id, None).unwrap_or_default();
+        state.calendar_state.tasks =
+            crate::db::calendar::load_tasks(&account.id, None).unwrap_or_default();
     }
     update_tray_unread(state);
 }
@@ -508,9 +514,10 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::ChatMessageBodyAction { message_id, action } => {
             if !action.is_edit()
-                && let Some(content) = state.chat_message_bodies.get_mut(&message_id) {
-                    content.perform(action);
-                }
+                && let Some(content) = state.chat_message_bodies.get_mut(&message_id)
+            {
+                content.perform(action);
+            }
             Task::none()
         }
         Message::SendMessageClicked => {
@@ -555,10 +562,8 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     direction: Direction::Outgoing,
                 };
                 if let Some(conv) = state.conversations.get_mut(idx)
-                    && let Some(existing) = conv
-                        .messages
-                        .iter_mut()
-                        .find(|m| m.id == target_id_owned)
+                    && let Some(existing) =
+                        conv.messages.iter_mut().find(|m| m.id == target_id_owned)
                 {
                     *existing = corrected.clone();
                 }
@@ -690,7 +695,9 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     .collect::<Vec<_>>();
                 return Task::perform(
                     async move {
-                        let _ = sender.send(XmppCommand::InitiateCall { to: to.clone() }).await;
+                        let _ = sender
+                            .send(XmppCommand::InitiateCall { to: to.clone() })
+                            .await;
                         let _ = sender
                             .send(XmppCommand::SendTransportInfo {
                                 with: to.clone(),
@@ -826,8 +833,7 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                             .map_err(|e| format!("download failed: {}", e))?
                             .to_vec()
                     };
-                    std::fs::write(&path, &bytes)
-                        .map_err(|e| format!("save failed: {}", e))?;
+                    std::fs::write(&path, &bytes).map_err(|e| format!("save failed: {}", e))?;
                     Ok(path.to_string_lossy().to_string())
                 },
                 Message::FileDownloadFinished,
@@ -909,17 +915,13 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Settings(msg) => match msg {
-            SettingsMessage::SaveClicked => {
-                Task::done(Message::SavePersonalDataConfig)
-            }
-            SettingsMessage::ClearClicked => {
-                Task::done(Message::ClearPersonalDataConfig)
-            }
+            SettingsMessage::SaveClicked => Task::done(Message::SavePersonalDataConfig),
+            SettingsMessage::ClearClicked => Task::done(Message::ClearPersonalDataConfig),
             _ => {
                 state.settings_state.update(msg);
                 Task::none()
             }
-        }
+        },
         Message::SavePersonalDataConfig => {
             let (mail, contacts, calendar) = state.settings_state.to_configs();
 
@@ -998,10 +1000,16 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
             crate::personal_data::PersonalDataEvent::EmailBody(email) => {
                 let email = *email;
                 if let Some(selected) = &mut state.mail_state.selected_email
-                    && selected.id == email.id {
-                        *selected = email.clone();
-                    }
-                if let Some(existing) = state.mail_state.emails.iter_mut().find(|e| e.id == email.id) {
+                    && selected.id == email.id
+                {
+                    *selected = email.clone();
+                }
+                if let Some(existing) = state
+                    .mail_state
+                    .emails
+                    .iter_mut()
+                    .find(|e| e.id == email.id)
+                {
                     *existing = email;
                 }
                 Task::none()
@@ -1392,7 +1400,9 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     let mut sender = sender.clone();
                     return Task::perform(
                         async move {
-                            let _ = sender.send(XmppCommand::SendCallRinging { with, sid }).await;
+                            let _ = sender
+                                .send(XmppCommand::SendCallRinging { with, sid })
+                                .await;
                         },
                         |_| Message::JidChanged(String::new()),
                     )
@@ -1418,9 +1428,10 @@ pub fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 candidates,
             } => {
                 if state.active_call_sid.as_deref() == Some(sid.as_str())
-                    || state.pending_incoming_call.as_ref().is_some_and(|(w, s)| {
-                        w == &with && s == &sid
-                    })
+                    || state
+                        .pending_incoming_call
+                        .as_ref()
+                        .is_some_and(|(w, s)| w == &with && s == &sid)
                 {
                     let mapped = candidates
                         .into_iter()
@@ -1465,7 +1476,9 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
                             Ok(emails) => {
                                 let _ = crate::db::mail::save_emails(&account_id, &emails);
                                 Message::PersonalDataEvent(
-                                    crate::personal_data::PersonalDataEvent::Emails(emails.into_boxed_slice()),
+                                    crate::personal_data::PersonalDataEvent::Emails(
+                                        emails.into_boxed_slice(),
+                                    ),
                                 )
                             }
                             Err(e) => Message::PersonalDataEvent(
@@ -1482,22 +1495,25 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
             if let Some(email) = state.mail_state.emails.iter().find(|e| e.id == id).cloned() {
                 state.mail_state.selected_email = Some(email.clone());
                 if email.body_text.is_none()
-                    && let Some(account) = state.mail_account.clone() {
-                        return Task::perform(
-                            async move {
-                                let mut client = crate::personal_data::mail::MailClient::new(&account);
-                                match client.fetch_email_body(&id).await {
-                                    Ok(email) => Message::PersonalDataEvent(
-                                        crate::personal_data::PersonalDataEvent::EmailBody(Box::new(email)),
-                                    ),
-                                    Err(e) => Message::PersonalDataEvent(
-                                        crate::personal_data::PersonalDataEvent::SyncFinished(Err(e)),
-                                    ),
-                                }
-                            },
-                            |m| m,
-                        );
-                    }
+                    && let Some(account) = state.mail_account.clone()
+                {
+                    return Task::perform(
+                        async move {
+                            let mut client = crate::personal_data::mail::MailClient::new(&account);
+                            match client.fetch_email_body(&id).await {
+                                Ok(email) => Message::PersonalDataEvent(
+                                    crate::personal_data::PersonalDataEvent::EmailBody(Box::new(
+                                        email,
+                                    )),
+                                ),
+                                Err(e) => Message::PersonalDataEvent(
+                                    crate::personal_data::PersonalDataEvent::SyncFinished(Err(e)),
+                                ),
+                            }
+                        },
+                        |m| m,
+                    );
+                }
             }
             Task::none()
         }
@@ -1552,7 +1568,10 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
                 return Task::perform(
                     async move {
                         let mut client = crate::personal_data::mail::MailClient::new(&account);
-                        match client.send_email(&to, &cc, &[], &subject, &body, None).await {
+                        match client
+                            .send_email(&to, &cc, &[], &subject, &body, None)
+                            .await
+                        {
                             Ok(()) => Message::PersonalDataEvent(
                                 crate::personal_data::PersonalDataEvent::SyncFinished(Ok(
                                     "Email sent".to_string(),
@@ -1618,59 +1637,67 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
             }
             Task::none()
         }
-    MailMessage::FiltersClicked => {
-        state.mail_state.viewing_filters = true;
-        if let Some(account) = state.mail_account.clone()
-            && account.sieve_config.is_some() {
+        MailMessage::FiltersClicked => {
+            state.mail_state.viewing_filters = true;
+            if let Some(account) = state.mail_account.clone()
+                && account.sieve_config.is_some()
+            {
                 return Task::perform(
                     async move { fetch_filters(account).await },
                     Message::PersonalDataEvent,
                 );
             }
-        Task::none()
-    }
-    MailMessage::MailboxViewClicked => {
-        state.mail_state.viewing_filters = false;
-        Task::none()
-    }
-    MailMessage::FilterSelected(id) => {
-        if let Some(filter) = state.mail_state.filters.iter().find(|f| f.id == id).cloned() {
-            state.mail_state.selected_filter = Some(filter.clone());
-            state.mail_state.editing_filter = false;
-            state.mail_state.filter_name = filter.name;
-            state.mail_state.filter_content = text_editor::Content::with_text(&filter.content);
+            Task::none()
         }
-        Task::none()
-    }
-    MailMessage::FilterNameChanged(v) => {
-        state.mail_state.filter_name = v;
-        Task::none()
-    }
-    MailMessage::FilterContentChanged(action) => {
-        state.mail_state.filter_content.perform(action);
-        Task::none()
-    }
-    MailMessage::NewFilter => {
-        state.mail_state.selected_filter = None;
-        state.mail_state.editing_filter = true;
-        state.mail_state.filter_name.clear();
-        state.mail_state.filter_content = text_editor::Content::new();
-        Task::none()
-    }
-    MailMessage::CancelFilterEdit => {
-        state.mail_state.editing_filter = false;
-        if let Some(filter) = state.mail_state.selected_filter.clone() {
-            state.mail_state.filter_name = filter.name;
-            state.mail_state.filter_content = text_editor::Content::with_text(&filter.content);
-        } else {
+        MailMessage::MailboxViewClicked => {
+            state.mail_state.viewing_filters = false;
+            Task::none()
+        }
+        MailMessage::FilterSelected(id) => {
+            if let Some(filter) = state
+                .mail_state
+                .filters
+                .iter()
+                .find(|f| f.id == id)
+                .cloned()
+            {
+                state.mail_state.selected_filter = Some(filter.clone());
+                state.mail_state.editing_filter = false;
+                state.mail_state.filter_name = filter.name;
+                state.mail_state.filter_content = text_editor::Content::with_text(&filter.content);
+            }
+            Task::none()
+        }
+        MailMessage::FilterNameChanged(v) => {
+            state.mail_state.filter_name = v;
+            Task::none()
+        }
+        MailMessage::FilterContentChanged(action) => {
+            state.mail_state.filter_content.perform(action);
+            Task::none()
+        }
+        MailMessage::NewFilter => {
+            state.mail_state.selected_filter = None;
+            state.mail_state.editing_filter = true;
             state.mail_state.filter_name.clear();
             state.mail_state.filter_content = text_editor::Content::new();
+            Task::none()
         }
-        Task::none()
-    }
-    MailMessage::SaveFilter => {
-        if let Some(account) = state.mail_account.clone()
-            && account.sieve_config.is_some() {
+        MailMessage::CancelFilterEdit => {
+            state.mail_state.editing_filter = false;
+            if let Some(filter) = state.mail_state.selected_filter.clone() {
+                state.mail_state.filter_name = filter.name;
+                state.mail_state.filter_content = text_editor::Content::with_text(&filter.content);
+            } else {
+                state.mail_state.filter_name.clear();
+                state.mail_state.filter_content = text_editor::Content::new();
+            }
+            Task::none()
+        }
+        MailMessage::SaveFilter => {
+            if let Some(account) = state.mail_account.clone()
+                && account.sieve_config.is_some()
+            {
                 let _filter_id = state
                     .mail_state
                     .selected_filter
@@ -1682,10 +1709,17 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
                 state.mail_state.editing_filter = false;
                 return Task::perform(
                     async move {
-                        let mut client = match crate::personal_data::sieve::ManageSieveClient::connect(&account).await {
-                            Ok(c) => c,
-                            Err(e) => return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e)),
-                        };
+                        let mut client =
+                            match crate::personal_data::sieve::ManageSieveClient::connect(&account)
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    return crate::personal_data::PersonalDataEvent::SyncFinished(
+                                        Err(e),
+                                    );
+                                }
+                            };
                         if let Err(e) = client.put_script(&name, &content).await {
                             return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e));
                         }
@@ -1695,19 +1729,27 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
                     Message::PersonalDataEvent,
                 );
             }
-        Task::none()
-    }
-    MailMessage::DeleteFilter => {
-        if let Some(account) = state.mail_account.clone()
-            && let Some(filter) = state.mail_state.selected_filter.clone() {
+            Task::none()
+        }
+        MailMessage::DeleteFilter => {
+            if let Some(account) = state.mail_account.clone()
+                && let Some(filter) = state.mail_state.selected_filter.clone()
+            {
                 state.mail_state.selected_filter = None;
                 state.mail_state.editing_filter = false;
                 return Task::perform(
                     async move {
-                        let mut client = match crate::personal_data::sieve::ManageSieveClient::connect(&account).await {
-                            Ok(c) => c,
-                            Err(e) => return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e)),
-                        };
+                        let mut client =
+                            match crate::personal_data::sieve::ManageSieveClient::connect(&account)
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    return crate::personal_data::PersonalDataEvent::SyncFinished(
+                                        Err(e),
+                                    );
+                                }
+                            };
                         if let Err(e) = client.delete_script(&filter.name).await {
                             return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e));
                         }
@@ -1717,17 +1759,25 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
                     Message::PersonalDataEvent,
                 );
             }
-        Task::none()
-    }
-    MailMessage::ActivateFilter => {
-        if let Some(account) = state.mail_account.clone()
-            && let Some(filter) = state.mail_state.selected_filter.clone() {
+            Task::none()
+        }
+        MailMessage::ActivateFilter => {
+            if let Some(account) = state.mail_account.clone()
+                && let Some(filter) = state.mail_state.selected_filter.clone()
+            {
                 return Task::perform(
                     async move {
-                        let mut client = match crate::personal_data::sieve::ManageSieveClient::connect(&account).await {
-                            Ok(c) => c,
-                            Err(e) => return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e)),
-                        };
+                        let mut client =
+                            match crate::personal_data::sieve::ManageSieveClient::connect(&account)
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    return crate::personal_data::PersonalDataEvent::SyncFinished(
+                                        Err(e),
+                                    );
+                                }
+                            };
                         if let Err(e) = client.set_active(&filter.name).await {
                             return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e));
                         }
@@ -1737,14 +1787,12 @@ fn handle_mail_message(state: &mut AppState, msg: MailMessage) -> Task<Message> 
                     Message::PersonalDataEvent,
                 );
             }
-        Task::none()
-    }
+            Task::none()
+        }
     }
 }
 
-async fn fetch_filters(
-    account: MailAccount,
-) -> crate::personal_data::PersonalDataEvent {
+async fn fetch_filters(account: MailAccount) -> crate::personal_data::PersonalDataEvent {
     let mut client = match crate::personal_data::sieve::ManageSieveClient::connect(&account).await {
         Ok(c) => c,
         Err(e) => return crate::personal_data::PersonalDataEvent::SyncFinished(Err(e)),
@@ -1765,10 +1813,9 @@ async fn fetch_filters(
                         });
                     }
                     Err(e) => {
-                        return crate::personal_data::PersonalDataEvent::SyncFinished(Err(format!(
-                            "Failed to fetch script {}: {}",
-                            name, e
-                        )));
+                        return crate::personal_data::PersonalDataEvent::SyncFinished(Err(
+                            format!("Failed to fetch script {}: {}", name, e),
+                        ));
                     }
                 }
             }
@@ -1805,7 +1852,9 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                                     }
                                 } else {
                                     Message::PersonalDataEvent(
-                                        crate::personal_data::PersonalDataEvent::Contacts(Vec::new().into_boxed_slice()),
+                                        crate::personal_data::PersonalDataEvent::Contacts(
+                                            Vec::new().into_boxed_slice(),
+                                        ),
                                     )
                                 }
                             }
@@ -1820,7 +1869,13 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
             Task::none()
         }
         ContactsMessage::ContactSelected(id) => {
-            if let Some(contact) = state.contacts_state.contacts.iter().find(|c| c.id == id).cloned() {
+            if let Some(contact) = state
+                .contacts_state
+                .contacts
+                .iter()
+                .find(|c| c.id == id)
+                .cloned()
+            {
                 state.contacts_state.selected_contact = Some(contact);
             }
             Task::none()
@@ -1838,8 +1893,10 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                 state.contacts_state.edit_display_name = contact.display_name.clone();
                 state.contacts_state.edit_first_name = contact.first_name.clone();
                 state.contacts_state.edit_last_name = contact.last_name.clone();
-                state.contacts_state.edit_email = contact.emails.first().cloned().unwrap_or_default();
-                state.contacts_state.edit_phone = contact.phones.first().cloned().unwrap_or_default();
+                state.contacts_state.edit_email =
+                    contact.emails.first().cloned().unwrap_or_default();
+                state.contacts_state.edit_phone =
+                    contact.phones.first().cloned().unwrap_or_default();
                 state.contacts_state.edit_org = contact.org.clone();
                 state.contacts_state.edit_note = contact.note.clone();
             }
@@ -1885,7 +1942,11 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                 .unwrap_or_else(|| ContactCard {
                     id: uuid::Uuid::new_v4().to_string(),
                     account_id: String::new(),
-                    addressbook_id: state.contacts_state.selected_addressbook.clone().unwrap_or_default(),
+                    addressbook_id: state
+                        .contacts_state
+                        .selected_addressbook
+                        .clone()
+                        .unwrap_or_default(),
                     href: String::new(),
                     etag: None,
                     uid: uuid::Uuid::new_v4().to_string(),
@@ -1920,14 +1981,11 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
 
             if contact.href.is_empty()
                 && let Some(book) = state.contacts_state.addressbooks.iter().find(|b| {
-                    state
-                        .contacts_state
-                        .selected_addressbook
-                        .as_deref()
-                        == Some(b.id.as_str())
-                }) {
-                    contact.href = format!("{}/{}.vcf", book.href.trim_end_matches('/'), contact.uid);
-                }
+                    state.contacts_state.selected_addressbook.as_deref() == Some(b.id.as_str())
+                })
+            {
+                contact.href = format!("{}/{}.vcf", book.href.trim_end_matches('/'), contact.uid);
+            }
 
             state.contacts_state.editing = false;
             if let Some(account) = state.contacts_account.clone() {
@@ -1953,7 +2011,8 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                 if let Some(account) = state.contacts_account.clone() {
                     return Task::perform(
                         async move {
-                            let client = crate::personal_data::contacts::ContactsClient::new(&account);
+                            let client =
+                                crate::personal_data::contacts::ContactsClient::new(&account);
                             match client.delete_contact(&contact).await {
                                 Ok(()) => Message::SyncPersonalData,
                                 Err(e) => Message::PersonalDataEvent(
@@ -1973,7 +2032,13 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                 .contacts_state
                 .selected_addressbook
                 .as_ref()
-                .and_then(|id| state.contacts_state.addressbooks.iter().find(|b| b.id == *id))
+                .and_then(|id| {
+                    state
+                        .contacts_state
+                        .addressbooks
+                        .iter()
+                        .find(|b| b.id == *id)
+                })
                 .cloned();
             Task::perform(
                 async move {
@@ -2006,11 +2071,8 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                         );
                     };
                     let account_id = account.id.clone();
-                    let contacts = crate::personal_data::contacts::import_vcards(
-                        &text,
-                        &account_id,
-                        &book.id,
-                    );
+                    let contacts =
+                        crate::personal_data::contacts::import_vcards(&text, &account_id, &book.id);
                     if contacts.is_empty() {
                         return Message::PersonalDataEvent(
                             crate::personal_data::PersonalDataEvent::SyncFinished(Err(
@@ -2025,11 +2087,8 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                         contact.account_id = account_id.clone();
                         contact.addressbook_id = book.id.clone();
                         if contact.href.is_empty() {
-                            contact.href = format!(
-                                "{}/{}.vcf",
-                                book.href.trim_end_matches('/'),
-                                contact.uid
-                            );
+                            contact.href =
+                                format!("{}/{}.vcf", book.href.trim_end_matches('/'), contact.uid);
                         }
                         if let Err(e) = client.save_contact(&contact).await {
                             errors.push(e);
@@ -2038,16 +2097,18 @@ fn handle_contacts_message(state: &mut AppState, msg: ContactsMessage) -> Task<M
                         }
                     }
                     Message::PersonalDataEvent(
-                        crate::personal_data::PersonalDataEvent::SyncFinished(if errors.is_empty() {
-                            Ok(format!("Imported {} contacts", count))
-                        } else {
-                            Err(format!(
-                                "Imported {} contacts, {} failed: {}",
-                                count,
-                                errors.len(),
-                                errors.join(", ")
-                            ))
-                        }),
+                        crate::personal_data::PersonalDataEvent::SyncFinished(
+                            if errors.is_empty() {
+                                Ok(format!("Imported {} contacts", count))
+                            } else {
+                                Err(format!(
+                                    "Imported {} contacts, {} failed: {}",
+                                    count,
+                                    errors.len(),
+                                    errors.join(", ")
+                                ))
+                            },
+                        ),
                     )
                 },
                 |m| m,
@@ -2125,7 +2186,9 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                                     }
                                 } else {
                                     Message::PersonalDataEvent(
-                                        crate::personal_data::PersonalDataEvent::Events(Vec::new().into_boxed_slice()),
+                                        crate::personal_data::PersonalDataEvent::Events(
+                                            Vec::new().into_boxed_slice(),
+                                        ),
                                     )
                                 }
                             }
@@ -2140,14 +2203,26 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
             Task::none()
         }
         CalendarMessage::EventSelected(id) => {
-            if let Some(event) = state.calendar_state.events.iter().find(|e| e.id == id).cloned() {
+            if let Some(event) = state
+                .calendar_state
+                .events
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+            {
                 state.calendar_state.selected_event = Some(event);
                 state.calendar_state.selected_task = None;
             }
             Task::none()
         }
         CalendarMessage::TaskSelected(id) => {
-            if let Some(task) = state.calendar_state.tasks.iter().find(|t| t.id == id).cloned() {
+            if let Some(task) = state
+                .calendar_state
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .cloned()
+            {
                 state.calendar_state.selected_task = Some(task);
                 state.calendar_state.selected_event = None;
             }
@@ -2158,7 +2233,8 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
             state.calendar_state.editing_task = false;
             state.calendar_state.edit_title.clear();
             state.calendar_state.edit_start = chrono::Utc::now().to_rfc3339();
-            state.calendar_state.edit_end = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+            state.calendar_state.edit_end =
+                (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
             state.calendar_state.edit_all_day = false;
             state.calendar_state.edit_description.clear();
             state.calendar_state.edit_location.clear();
@@ -2181,7 +2257,8 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
             state.calendar_state.edit_description.clear();
             if let Some(task) = &state.calendar_state.selected_task {
                 state.calendar_state.edit_title = task.title.clone();
-                state.calendar_state.edit_due = task.due.map(|d| d.to_rfc3339()).unwrap_or_default();
+                state.calendar_state.edit_due =
+                    task.due.map(|d| d.to_rfc3339()).unwrap_or_default();
                 state.calendar_state.edit_status = task.status.clone();
                 state.calendar_state.edit_description = task.description.clone();
             }
@@ -2232,7 +2309,11 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                 .unwrap_or_else(|| CalendarEvent {
                     id: uuid::Uuid::new_v4().to_string(),
                     account_id: String::new(),
-                    calendar_id: state.calendar_state.selected_calendar.clone().unwrap_or_default(),
+                    calendar_id: state
+                        .calendar_state
+                        .selected_calendar
+                        .clone()
+                        .unwrap_or_default(),
                     href: String::new(),
                     etag: None,
                     uid: uuid::Uuid::new_v4().to_string(),
@@ -2246,8 +2327,16 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                     raw_ics: String::new(),
                 });
             event.title = state.calendar_state.edit_title.clone();
-            event.start = state.calendar_state.edit_start.parse().unwrap_or_else(|_| chrono::Utc::now());
-            event.end = state.calendar_state.edit_end.parse().unwrap_or_else(|_| chrono::Utc::now());
+            event.start = state
+                .calendar_state
+                .edit_start
+                .parse()
+                .unwrap_or_else(|_| chrono::Utc::now());
+            event.end = state
+                .calendar_state
+                .edit_end
+                .parse()
+                .unwrap_or_else(|_| chrono::Utc::now());
             event.all_day = state.calendar_state.edit_all_day;
             event.description = state.calendar_state.edit_description.clone();
             event.location = state.calendar_state.edit_location.clone();
@@ -2255,9 +2344,10 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
             if event.href.is_empty()
                 && let Some(cal) = state.calendar_state.calendars.iter().find(|c| {
                     state.calendar_state.selected_calendar.as_deref() == Some(c.id.as_str())
-                }) {
-                    event.href = format!("{}/{}.ics", cal.href.trim_end_matches('/'), event.uid);
-                }
+                })
+            {
+                event.href = format!("{}/{}.ics", cal.href.trim_end_matches('/'), event.uid);
+            }
 
             state.calendar_state.editing_event = false;
             if let Some(account) = state.calendar_account.clone() {
@@ -2285,7 +2375,11 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                 .unwrap_or_else(|| CalendarTask {
                     id: uuid::Uuid::new_v4().to_string(),
                     account_id: String::new(),
-                    calendar_id: state.calendar_state.selected_calendar.clone().unwrap_or_default(),
+                    calendar_id: state
+                        .calendar_state
+                        .selected_calendar
+                        .clone()
+                        .unwrap_or_default(),
                     href: String::new(),
                     etag: None,
                     uid: uuid::Uuid::new_v4().to_string(),
@@ -2308,9 +2402,10 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
             if task.href.is_empty()
                 && let Some(cal) = state.calendar_state.calendars.iter().find(|c| {
                     state.calendar_state.selected_calendar.as_deref() == Some(c.id.as_str())
-                }) {
-                    task.href = format!("{}/{}.ics", cal.href.trim_end_matches('/'), task.uid);
-                }
+                })
+            {
+                task.href = format!("{}/{}.ics", cal.href.trim_end_matches('/'), task.uid);
+            }
 
             state.calendar_state.editing_task = false;
             if let Some(account) = state.calendar_account.clone() {
@@ -2336,7 +2431,8 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                 if let Some(account) = state.calendar_account.clone() {
                     return Task::perform(
                         async move {
-                            let client = crate::personal_data::calendar::CalendarClient::new(&account);
+                            let client =
+                                crate::personal_data::calendar::CalendarClient::new(&account);
                             match client.delete_event(&event).await {
                                 Ok(()) => Message::SyncPersonalData,
                                 Err(e) => Message::PersonalDataEvent(
@@ -2356,7 +2452,8 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                 if let Some(account) = state.calendar_account.clone() {
                     return Task::perform(
                         async move {
-                            let client = crate::personal_data::calendar::CalendarClient::new(&account);
+                            let client =
+                                crate::personal_data::calendar::CalendarClient::new(&account);
                             match client.delete_task(&task).await {
                                 Ok(()) => Message::SyncPersonalData,
                                 Err(e) => Message::PersonalDataEvent(
@@ -2445,11 +2542,8 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                         task.account_id = account_id.clone();
                         task.calendar_id = calendar.id.clone();
                         if task.href.is_empty() {
-                            task.href = format!(
-                                "{}/{}.ics",
-                                calendar.href.trim_end_matches('/'),
-                                task.uid
-                            );
+                            task.href =
+                                format!("{}/{}.ics", calendar.href.trim_end_matches('/'), task.uid);
                         }
                         if let Err(e) = client.save_task(task).await {
                             errors.push(e);
@@ -2458,20 +2552,22 @@ fn handle_calendar_message(state: &mut AppState, msg: CalendarMessage) -> Task<M
                         }
                     }
                     Message::PersonalDataEvent(
-                        crate::personal_data::PersonalDataEvent::SyncFinished(if errors.is_empty() {
-                            Ok(format!(
-                                "Imported {} events and {} tasks",
-                                event_count, task_count
-                            ))
-                        } else {
-                            Err(format!(
-                                "Imported {} events and {} tasks, {} failed: {}",
-                                event_count,
-                                task_count,
-                                errors.len(),
-                                errors.join(", ")
-                            ))
-                        }),
+                        crate::personal_data::PersonalDataEvent::SyncFinished(
+                            if errors.is_empty() {
+                                Ok(format!(
+                                    "Imported {} events and {} tasks",
+                                    event_count, task_count
+                                ))
+                            } else {
+                                Err(format!(
+                                    "Imported {} events and {} tasks, {} failed: {}",
+                                    event_count,
+                                    task_count,
+                                    errors.len(),
+                                    errors.join(", ")
+                                ))
+                            },
+                        ),
                     )
                 },
                 |m| m,
@@ -2743,21 +2839,27 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
                 }
                 Tab::Mail => {
                     if state.mail_account.is_none() {
-                        empty_state("No mail account configured.\nGo to Settings → Mail to add one.")
+                        empty_state(
+                            "No mail account configured.\nGo to Settings → Mail to add one.",
+                        )
                     } else {
                         mail::view(&state.mail_state)
                     }
                 }
                 Tab::Contacts => {
                     if state.contacts_account.is_none() {
-                        empty_state("No contacts account configured.\nGo to Settings → Contacts to add one.")
+                        empty_state(
+                            "No contacts account configured.\nGo to Settings → Contacts to add one.",
+                        )
                     } else {
                         contacts::view(&state.contacts_state)
                     }
                 }
                 Tab::Calendar => {
                     if state.calendar_account.is_none() {
-                        empty_state("No calendar account configured.\nGo to Settings → Calendar to add one.")
+                        empty_state(
+                            "No calendar account configured.\nGo to Settings → Calendar to add one.",
+                        )
                     } else {
                         calendar::view(&state.calendar_state)
                     }
@@ -2813,7 +2915,9 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
 fn tab_button<'a>(label: &'a str, tab: Tab, state: &AppState) -> iced::Element<'a, Message> {
     let selected = state.current_tab == tab;
-    let btn = button(text(label)).padding(6).on_press(Message::TabSelected(tab));
+    let btn = button(text(label))
+        .padding(6)
+        .on_press(Message::TabSelected(tab));
     if selected {
         container(btn)
             .style(|theme: &Theme| container::Style {
@@ -2857,8 +2961,8 @@ pub fn subscription(_state: &AppState) -> Subscription<Message> {
         )
     });
 
-    let sync_sub = iced::time::every(std::time::Duration::from_secs(300))
-        .map(|_| Message::SyncPersonalData);
+    let sync_sub =
+        iced::time::every(std::time::Duration::from_secs(300)).map(|_| Message::SyncPersonalData);
 
     Subscription::batch([xmpp_sub, close_sub, open_sub, tray_sub, sync_sub])
 }
@@ -2895,7 +2999,11 @@ fn save_config(account: &Account) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(path.parent().unwrap())?;
 
     if !account.password.is_empty() {
-        crate::secrets::store_password(crate::secrets::SERVICE_XMPP, &account.jid, &account.password)?;
+        crate::secrets::store_password(
+            crate::secrets::SERVICE_XMPP,
+            &account.jid,
+            &account.password,
+        )?;
     }
 
     let mut stored = account.clone();

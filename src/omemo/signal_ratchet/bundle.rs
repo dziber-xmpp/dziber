@@ -1,4 +1,4 @@
-use crate::signal_ratchet::keys::{CURVE25519_KEY_LEN, verify_signature};
+use super::super::signal_ratchet::keys::{CURVE25519_KEY_LEN, verify_signature};
 
 /// A peer's public pre-key bundle, used to establish an outbound session.
 #[derive(Clone, Debug)]

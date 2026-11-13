@@ -408,14 +408,20 @@ mod tests {
     #[test]
     fn default_imap_port() {
         assert_eq!(MailProtocol::default_imap_port(&MailSecurity::Tls), 993);
-        assert_eq!(MailProtocol::default_imap_port(&MailSecurity::StartTls), 143);
+        assert_eq!(
+            MailProtocol::default_imap_port(&MailSecurity::StartTls),
+            143
+        );
         assert_eq!(MailProtocol::default_imap_port(&MailSecurity::None), 143);
     }
 
     #[test]
     fn default_smtp_port() {
         assert_eq!(MailProtocol::default_smtp_port(&MailSecurity::Tls), 465);
-        assert_eq!(MailProtocol::default_smtp_port(&MailSecurity::StartTls), 587);
+        assert_eq!(
+            MailProtocol::default_smtp_port(&MailSecurity::StartTls),
+            587
+        );
         assert_eq!(MailProtocol::default_smtp_port(&MailSecurity::None), 25);
     }
 
@@ -429,7 +435,10 @@ mod tests {
     #[test]
     fn security_from_string_works() {
         assert_eq!(security_from_string(Some("tls")), MailSecurity::Tls);
-        assert_eq!(security_from_string(Some("starttls")), MailSecurity::StartTls);
+        assert_eq!(
+            security_from_string(Some("starttls")),
+            MailSecurity::StartTls
+        );
         assert_eq!(security_from_string(Some("none")), MailSecurity::None);
         assert_eq!(security_from_string(None), MailSecurity::Tls);
         assert_eq!(security_from_string(Some("unknown")), MailSecurity::Tls);
@@ -437,8 +446,15 @@ mod tests {
 
     #[test]
     fn security_string_roundtrip() {
-        for security in [MailSecurity::Tls, MailSecurity::StartTls, MailSecurity::None] {
-            assert_eq!(super::security_from_string(Some(&super::security_to_string(&security))), security);
+        for security in [
+            MailSecurity::Tls,
+            MailSecurity::StartTls,
+            MailSecurity::None,
+        ] {
+            assert_eq!(
+                super::security_from_string(Some(&super::security_to_string(&security))),
+                security
+            );
         }
     }
 
@@ -458,7 +474,10 @@ mod tests {
     #[test]
     fn dav_or_jmap_string_roundtrip() {
         for protocol in [DavOrJmap::Dav, DavOrJmap::Jmap] {
-            assert_eq!(super::dav_or_jmap_from_string(&super::dav_or_jmap_to_string(&protocol)), protocol);
+            assert_eq!(
+                super::dav_or_jmap_from_string(&super::dav_or_jmap_to_string(&protocol)),
+                protocol
+            );
         }
     }
 

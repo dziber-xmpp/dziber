@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use base64::Engine;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf,
+};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
@@ -242,7 +244,10 @@ impl ManageSieveClient {
             if n == 0 {
                 return Err("ManageSieve server closed connection".to_string());
             }
-            let line = buffer.trim_end_matches('\r').trim_end_matches('\n').to_string();
+            let line = buffer
+                .trim_end_matches('\r')
+                .trim_end_matches('\n')
+                .to_string();
             if line.starts_with("OK") || line.starts_with("NO") || line.starts_with("BYE") {
                 lines.push(line);
                 return Ok(lines);
@@ -299,7 +304,11 @@ fn parse_script_list(response: &str) -> Vec<(String, bool)> {
     let mut scripts = Vec::new();
     for line in response.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("OK") || line.starts_with("NO") || line.starts_with("BYE") {
+        if line.is_empty()
+            || line.starts_with("OK")
+            || line.starts_with("NO")
+            || line.starts_with("BYE")
+        {
             continue;
         }
         let mut active = false;
@@ -374,7 +383,9 @@ fn unquote(s: &str) -> Option<String> {
     }
 }
 
-fn server_name(server: &str) -> Result<tokio_rustls::rustls::pki_types::ServerName<'static>, String> {
+fn server_name(
+    server: &str,
+) -> Result<tokio_rustls::rustls::pki_types::ServerName<'static>, String> {
     tokio_rustls::rustls::pki_types::ServerName::try_from(server.to_string())
         .map_err(|e| format!("invalid server name: {:?}", e))
 }
@@ -403,10 +414,10 @@ mod tests {
     fn test_parse_script_list() {
         let response = "\"spam\" ACTIVE\r\n\"vacation\"\r\nOK\r\n";
         let scripts = parse_script_list(response);
-        assert_eq!(scripts, vec![
-            ("spam".to_string(), true),
-            ("vacation".to_string(), false),
-        ]);
+        assert_eq!(
+            scripts,
+            vec![("spam".to_string(), true), ("vacation".to_string(), false),]
+        );
     }
 
     #[test]
@@ -420,7 +431,10 @@ mod tests {
     #[test]
     fn test_unquote() {
         assert_eq!(unquote("\"hello\""), Some("hello".to_string()));
-        assert_eq!(unquote("\"say \\\"hi\\\"\""), Some("say \"hi\"".to_string()));
+        assert_eq!(
+            unquote("\"say \\\"hi\\\"\""),
+            Some("say \"hi\"".to_string())
+        );
         assert_eq!(unquote("plain"), None);
     }
 
@@ -439,7 +453,9 @@ mod tests {
             sieve_config: None,
         };
         let encoded = sasl_plain_for_account(&account);
-        let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
         assert_eq!(decoded, b"\0alice\0secret");
     }
 
@@ -461,7 +477,9 @@ mod tests {
             sieve_config: None,
         };
         let encoded = sasl_plain_for_account(&account);
-        let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
         assert_eq!(decoded, b"\0alice%admin\0adminpass");
     }
 
@@ -475,10 +493,7 @@ mod tests {
             split_sieve_response(r#"a "b c" d"#),
             vec!["a", "\"b c\"", "d"]
         );
-        assert_eq!(
-            split_sieve_response("spaced   out"),
-            vec!["spaced", "out"]
-        );
+        assert_eq!(split_sieve_response("spaced   out"), vec!["spaced", "out"]);
         assert_eq!(
             split_sieve_response(r#""escaped \"quote\"""#),
             vec![r#""escaped \"quote\"""#]

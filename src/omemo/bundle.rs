@@ -100,7 +100,7 @@ pub fn build_bundle_element_v0(bundle: &Bundle) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::OmemoAccount;
+    use crate::omemo::account::OmemoAccount;
     use vodozemac::{Curve25519PublicKey, Curve25519SecretKey};
 
     fn sample_bundle() -> (OmemoAccount, Bundle) {

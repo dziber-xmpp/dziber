@@ -65,7 +65,7 @@ impl JmapClient {
     }
 
     fn default_headers(&self) -> reqwest::header::HeaderMap {
-        use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+        use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -119,7 +119,15 @@ mod tests {
     #[test]
     fn extract_response_missing_or_invalid() {
         let client = JmapClient::new(&test_account());
-        assert!(client.extract_response(&serde_json::json!({}), "x").is_none());
-        assert!(client.extract_response(&serde_json::json!({ "methodResponses": "bad" }), "x").is_none());
+        assert!(
+            client
+                .extract_response(&serde_json::json!({}), "x")
+                .is_none()
+        );
+        assert!(
+            client
+                .extract_response(&serde_json::json!({ "methodResponses": "bad" }), "x")
+                .is_none()
+        );
     }
 }

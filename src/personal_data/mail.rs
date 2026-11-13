@@ -37,12 +37,16 @@ impl JmapMailClient {
         if path.starts_with("http://") || path.starts_with("https://") {
             path.to_string()
         } else {
-            format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'))
+            format!(
+                "{}/{}",
+                self.base_url.trim_end_matches('/'),
+                path.trim_start_matches('/')
+            )
         }
     }
 
     fn default_headers(&self) -> reqwest::header::HeaderMap {
-        use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+        use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -137,26 +141,44 @@ impl JmapMailClient {
 
         let mut mailboxes = Vec::new();
         if let Some(args) = self.extract_response(&response, "Mailbox/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let role = item.get("role").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let sort_order = item.get("sortOrder").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                    let total = item.get("totalEmails").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                    let unread = item.get("unreadEmails").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let role = item
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let sort_order = item.get("sortOrder").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let total = item
+                    .get("totalEmails")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32;
+                let unread = item
+                    .get("unreadEmails")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32;
 
-                    mailboxes.push(Mailbox {
-                        id,
-                        account_id: self.account_id.clone(),
-                        name,
-                        role,
-                        sort_order,
-                        total_emails: total,
-                        unread_emails: unread,
-                    });
-                }
+                mailboxes.push(Mailbox {
+                    id,
+                    account_id: self.account_id.clone(),
+                    name,
+                    role,
+                    sort_order,
+                    total_emails: total,
+                    unread_emails: unread,
+                });
             }
+        }
 
         Ok(mailboxes)
     }
@@ -203,11 +225,12 @@ impl JmapMailClient {
 
         let mut emails = Vec::new();
         if let Some(args) = self.extract_response(&response, "Email/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    emails.push(self.parse_email(item));
-                }
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                emails.push(self.parse_email(item));
             }
+        }
 
         Ok(emails)
     }
@@ -234,40 +257,41 @@ impl JmapMailClient {
 
         if let Some(args) = self.extract_response(&response, "Email/get")
             && let Some(list) = args.get("list").and_then(|v| v.as_array())
-                && let Some(item) = list.first() {
-                    let mut email = self.parse_email(item);
+            && let Some(item) = list.first()
+        {
+            let mut email = self.parse_email(item);
 
-                    let body_values = item.get("bodyValues").and_then(|v| v.as_object());
-                    if let Some(text_parts) = item.get("textBody").and_then(|v| v.as_array()) {
-                        for part in text_parts {
-                            let part_id = part.get("partId").and_then(|v| v.as_str()).unwrap_or("");
-                            if let Some(value) = body_values
-                                .and_then(|m| m.get(part_id))
-                                .and_then(|v| v.get("value"))
-                                .and_then(|v| v.as_str())
-                            {
-                                email.body_text = Some(value.to_string());
-                                break;
-                            }
-                        }
+            let body_values = item.get("bodyValues").and_then(|v| v.as_object());
+            if let Some(text_parts) = item.get("textBody").and_then(|v| v.as_array()) {
+                for part in text_parts {
+                    let part_id = part.get("partId").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(value) = body_values
+                        .and_then(|m| m.get(part_id))
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_str())
+                    {
+                        email.body_text = Some(value.to_string());
+                        break;
                     }
-
-                    if let Some(html_parts) = item.get("htmlBody").and_then(|v| v.as_array()) {
-                        for part in html_parts {
-                            let part_id = part.get("partId").and_then(|v| v.as_str()).unwrap_or("");
-                            if let Some(value) = body_values
-                                .and_then(|m| m.get(part_id))
-                                .and_then(|v| v.get("value"))
-                                .and_then(|v| v.as_str())
-                            {
-                                email.body_html = Some(value.to_string());
-                                break;
-                            }
-                        }
-                    }
-
-                    return Ok(email);
                 }
+            }
+
+            if let Some(html_parts) = item.get("htmlBody").and_then(|v| v.as_array()) {
+                for part in html_parts {
+                    let part_id = part.get("partId").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(value) = body_values
+                        .and_then(|m| m.get(part_id))
+                        .and_then(|v| v.get("value"))
+                        .and_then(|v| v.as_str())
+                    {
+                        email.body_html = Some(value.to_string());
+                        break;
+                    }
+                }
+            }
+
+            return Ok(email);
+        }
 
         Err("Email not found".to_string())
     }
@@ -401,11 +425,7 @@ impl JmapMailClient {
         });
 
         let response = self
-            .jmap_request(vec![json!([
-                "Email/set",
-                create_email,
-                "0"
-            ])])
+            .jmap_request(vec![json!(["Email/set", create_email, "0"])])
             .await?;
 
         let created_id = self
@@ -455,17 +475,26 @@ impl JmapMailClient {
 
         if let Some(args) = self.extract_response(&response, "Identity/get")
             && let Some(list) = args.get("list").and_then(|v| v.as_array())
-                && let Some(item) = list.first() {
-                    return Ok(Identity {
-                        id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        name: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        email: item
-                            .get("email")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    });
-                }
+            && let Some(item) = list.first()
+        {
+            return Ok(Identity {
+                id: item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                name: item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                email: item
+                    .get("email")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
 
         Err("No identity found".to_string())
     }
@@ -477,7 +506,10 @@ impl JmapMailClient {
                 .map(|arr| {
                     arr.iter()
                         .map(|addr| EmailAddress {
-                            name: addr.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            name: addr
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
                             email: addr
                                 .get("email")
                                 .and_then(|v| v.as_str())
@@ -509,7 +541,11 @@ impl JmapMailClient {
             .unwrap_or_else(Utc::now);
 
         Email {
-            id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            id: item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             account_id: self.account_id.clone(),
             thread_id: item
                 .get("threadId")
@@ -535,7 +571,10 @@ impl JmapMailClient {
             body_text: None,
             body_html: None,
             keywords,
-            has_attachments: item.get("hasAttachment").and_then(|v| v.as_bool()).unwrap_or(false),
+            has_attachments: item
+                .get("hasAttachment")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             size: item.get("size").and_then(|v| v.as_i64()).unwrap_or(0),
         }
     }
@@ -556,9 +595,9 @@ impl MailClient {
     pub fn new(account: &MailAccount) -> Self {
         match &account.mail_protocol {
             crate::models::account::MailProtocol::Jmap => Self::Jmap(JmapMailClient::new(account)),
-            crate::models::account::MailProtocol::ImapSmtp { .. } => {
-                Self::ImapSmtp(crate::personal_data::imap_smtp::ImapSmtpClient::new(account))
-            }
+            crate::models::account::MailProtocol::ImapSmtp { .. } => Self::ImapSmtp(
+                crate::personal_data::imap_smtp::ImapSmtpClient::new(account),
+            ),
         }
     }
 
@@ -607,8 +646,14 @@ impl MailClient {
         body_html: Option<&str>,
     ) -> Result<(), String> {
         match self {
-            Self::Jmap(c) => c.send_email(to, cc, bcc, subject, body_text, body_html).await,
-            Self::ImapSmtp(c) => c.send_email(to, cc, bcc, subject, body_text, body_html).await,
+            Self::Jmap(c) => {
+                c.send_email(to, cc, bcc, subject, body_text, body_html)
+                    .await
+            }
+            Self::ImapSmtp(c) => {
+                c.send_email(to, cc, bcc, subject, body_text, body_html)
+                    .await
+            }
         }
     }
 }
@@ -644,7 +689,10 @@ mod tests {
         let client = JmapMailClient::new(&test_account());
         assert_eq!(client.build_url("/jmap"), "https://example.com/jmap");
         assert_eq!(client.build_url("jmap"), "https://example.com/jmap");
-        assert_eq!(client.build_url("https://other.test/api"), "https://other.test/api");
+        assert_eq!(
+            client.build_url("https://other.test/api"),
+            "https://other.test/api"
+        );
     }
 
     #[test]

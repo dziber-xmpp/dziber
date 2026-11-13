@@ -134,15 +134,16 @@ impl CalDavClient {
         for resp in responses {
             if resp.href.ends_with(".ics")
                 && let Some(ics_text) = resp.prop("calendar-data")
-                    && let Some(event) = parse_event(
-                        &account_id,
-                        &calendar.id,
-                        &resp.href,
-                        resp.prop("getetag").map(|s| s.to_string()),
-                        ics_text,
-                    ) {
-                        events.push(event);
-                    }
+                && let Some(event) = parse_event(
+                    &account_id,
+                    &calendar.id,
+                    &resp.href,
+                    resp.prop("getetag").map(|s| s.to_string()),
+                    ics_text,
+                )
+            {
+                events.push(event);
+            }
         }
 
         Ok(events)
@@ -181,18 +182,83 @@ impl CalDavClient {
         for resp in responses {
             if resp.href.ends_with(".ics")
                 && let Some(ics_text) = resp.prop("calendar-data")
-                    && let Some(task) = parse_task(
-                        &account_id,
-                        &calendar.id,
-                        &resp.href,
-                        resp.prop("getetag").map(|s| s.to_string()),
-                        ics_text,
-                    ) {
-                        tasks.push(task);
-                    }
+                && let Some(task) = parse_task(
+                    &account_id,
+                    &calendar.id,
+                    &resp.href,
+                    resp.prop("getetag").map(|s| s.to_string()),
+                    ics_text,
+                )
+            {
+                tasks.push(task);
+            }
         }
 
         Ok(tasks)
+    }
+
+    pub async fn create_calendar(&self, id: &str, name: &str) -> Result<String, String> {
+        if id.is_empty() || id.contains(['/', '\r', '\n']) {
+            return Err("invalid calendar id".to_owned());
+        }
+        let path = format!("{}{}/", self.root().await, id);
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><D:displayname>{}</D:displayname></D:prop></D:set></C:mkcalendar>"#,
+            escape_xml(name)
+        );
+        let (status, _) = self
+            .dav
+            .request(
+                reqwest::Method::from_bytes(b"MKCALENDAR").unwrap(),
+                &path,
+                Some(body),
+                Some("application/xml; charset=utf-8"),
+                None,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if status >= 400 {
+            return Err(format!("Failed to create calendar: HTTP {status}"));
+        }
+        Ok(format!("{}/{}", self.account.username, id))
+    }
+
+    pub async fn rename_calendar(&self, calendar: &Calendar, name: &str) -> Result<(), String> {
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propertyupdate xmlns:D="DAV:"><D:set><D:prop><D:displayname>{}</D:displayname></D:prop></D:set></D:propertyupdate>"#,
+            escape_xml(name)
+        );
+        let (status, _) = self
+            .dav
+            .request(
+                reqwest::Method::from_bytes(b"PROPPATCH").unwrap(),
+                &calendar.href,
+                Some(body),
+                Some("application/xml; charset=utf-8"),
+                None,
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if status >= 400 {
+            return Err(format!("Failed to rename calendar: HTTP {status}"));
+        }
+        Ok(())
+    }
+
+    pub async fn delete_calendar(&self, calendar: &Calendar) -> Result<(), String> {
+        let status = self
+            .dav
+            .delete(&calendar.href, None)
+            .await
+            .map_err(|error| error.to_string())?;
+        if status >= 400 {
+            return Err(format!("Failed to delete calendar: HTTP {status}"));
+        }
+        Ok(())
     }
 
     pub async fn save_event(&self, event: &CalendarEvent) -> Result<(), String> {
@@ -206,12 +272,7 @@ impl CalDavClient {
         let etag = event.etag.as_deref();
         let (status, _) = self
             .dav
-            .put(
-                &path,
-                ics_text,
-                "text/calendar; charset=utf-8",
-                etag,
-            )
+            .put(&path, ics_text, "text/calendar; charset=utf-8", etag)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -254,12 +315,7 @@ impl CalDavClient {
         let etag = task.etag.as_deref();
         let (status, _) = self
             .dav
-            .put(
-                &path,
-                ics_text,
-                "text/calendar; charset=utf-8",
-                etag,
-            )
+            .put(&path, ics_text, "text/calendar; charset=utf-8", etag)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -290,11 +346,21 @@ impl CalDavClient {
 
         Ok(())
     }
+}
 
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn unfold_ics(text: &str) -> String {
-    text.replace("\r\n ", "").replace("\r\n\t", "").replace("\n ", "").replace("\n\t", "")
+    text.replace("\r\n ", "")
+        .replace("\r\n\t", "")
+        .replace("\n ", "")
+        .replace("\n\t", "")
 }
 
 fn parse_ics_properties(text: &str) -> Vec<(String, String)> {
@@ -309,7 +375,11 @@ fn parse_ics_properties(text: &str) -> Vec<(String, String)> {
             let mut parts = line.splitn(2, ':');
             let name_part = parts.next()?;
             let value = parts.next().unwrap_or("").to_string();
-            let name = name_part.split(';').next().unwrap_or(name_part).to_uppercase();
+            let name = name_part
+                .split(';')
+                .next()
+                .unwrap_or(name_part)
+                .to_uppercase();
             Some((name, value))
         })
         .collect()
@@ -491,7 +561,11 @@ fn event_component_lines(event: &CalendarEvent) -> Vec<String> {
         format!("LOCATION:{}", encode_ics_text(&event.location)),
         format!(
             "STATUS:{}",
-            if event.status.is_empty() { "CONFIRMED" } else { &event.status }
+            if event.status.is_empty() {
+                "CONFIRMED"
+            } else {
+                &event.status
+            }
         ),
         "END:VEVENT".to_string(),
     ]
@@ -576,11 +650,18 @@ fn task_component_lines(task: &CalendarTask) -> Vec<String> {
         ));
     }
 
-    lines.push(format!("DESCRIPTION:{}", encode_ics_text(&task.description)));
+    lines.push(format!(
+        "DESCRIPTION:{}",
+        encode_ics_text(&task.description)
+    ));
     lines.push(format!("LOCATION:{}", encode_ics_text(&task.location)));
     lines.push(format!(
         "STATUS:{}",
-        if task.status.is_empty() { "NEEDS-ACTION" } else { &task.status }
+        if task.status.is_empty() {
+            "NEEDS-ACTION"
+        } else {
+            &task.status
+        }
     ));
     lines.push(format!("PRIORITY:{}", task.priority));
     lines.push(format!("PERCENT-COMPLETE:{}", task.percent_complete));
@@ -637,27 +718,28 @@ impl JmapCalendarClient {
 
         let mut calendars = Vec::new();
         if let Some(args) = self.jmap.extract_response(&response, "Calendar/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                        calendars.push(Calendar {
-                            id: id.to_string(),
-                            account_id: self.jmap.account_id.clone(),
-                            href: String::new(),
-                            name: item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Calendar")
-                                .to_string(),
-                            color: item
-                                .get("color")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                            ctag: None,
-                        });
-                    }
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    calendars.push(Calendar {
+                        id: id.to_string(),
+                        account_id: self.jmap.account_id.clone(),
+                        href: String::new(),
+                        name: item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Calendar")
+                            .to_string(),
+                        color: item
+                            .get("color")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        ctag: None,
+                    });
                 }
             }
+        }
         Ok(calendars)
     }
 
@@ -695,17 +777,18 @@ impl JmapCalendarClient {
 
         let mut events = Vec::new();
         if let Some(args) = self.jmap.extract_response(&response, "CalendarEvent/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    if let Some(event) = parse_jmap_event(&self.jmap.account_id, item)
-                        && event.calendar_id == calendar.id
-                            && event.start.year() >= year
-                            && event.start.year() <= year + 1
-                        {
-                            events.push(event);
-                        }
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                if let Some(event) = parse_jmap_event(&self.jmap.account_id, item)
+                    && event.calendar_id == calendar.id
+                    && event.start.year() >= year
+                    && event.start.year() <= year + 1
+                {
+                    events.push(event);
                 }
             }
+        }
         Ok(events)
     }
 
@@ -739,15 +822,74 @@ impl JmapCalendarClient {
 
         let mut tasks = Vec::new();
         if let Some(args) = self.jmap.extract_response(&response, "Task/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    if let Some(task) = parse_jmap_task(&self.jmap.account_id, item)
-                        && task.calendar_id == calendar.id {
-                            tasks.push(task);
-                        }
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                if let Some(task) = parse_jmap_task(&self.jmap.account_id, item)
+                    && task.calendar_id == calendar.id
+                {
+                    tasks.push(task);
                 }
             }
+        }
         Ok(tasks)
+    }
+
+    pub async fn create_calendar(&self, id: &str, name: &str) -> Result<String, String> {
+        let response = self
+            .jmap
+            .request(
+                &[
+                    "urn:ietf:params:jmap:core",
+                    "urn:ietf:params:jmap:calendars",
+                ],
+                vec![json!(["Calendar/set", {
+                "accountId": self.jmap.account_id,
+                "create": { (id): { "name": name } },
+            }, "0"])],
+            )
+            .await?;
+        Ok(self
+            .jmap
+            .extract_response(&response, "Calendar/set")
+            .and_then(|body| body.get("created"))
+            .and_then(|created| created.get(id))
+            .and_then(|calendar| calendar.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_owned())
+    }
+
+    pub async fn rename_calendar(&self, calendar: &Calendar, name: &str) -> Result<(), String> {
+        self.jmap
+            .request(
+                &[
+                    "urn:ietf:params:jmap:core",
+                    "urn:ietf:params:jmap:calendars",
+                ],
+                vec![json!(["Calendar/set", {
+                "accountId": self.jmap.account_id,
+                "update": { (calendar.id.clone()): { "name": name } },
+            }, "0"])],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_calendar(&self, calendar: &Calendar) -> Result<(), String> {
+        self.jmap
+            .request(
+                &[
+                    "urn:ietf:params:jmap:core",
+                    "urn:ietf:params:jmap:calendars",
+                ],
+                vec![json!(["Calendar/set", {
+                "accountId": self.jmap.account_id,
+                "destroy": [calendar.id.clone()],
+            }, "0"])],
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn save_event(&self, event: &CalendarEvent) -> Result<(), String> {
@@ -770,7 +912,7 @@ impl JmapCalendarClient {
                 {
                     "accountId": account_id,
                     "update": {
-                        event.id.clone(): payload
+                        (event.id.clone()): payload
                     }
                 },
                 "0"
@@ -833,7 +975,7 @@ impl JmapCalendarClient {
                 {
                     "accountId": account_id,
                     "update": {
-                        task.id.clone(): payload
+                        (task.id.clone()): payload
                     }
                 },
                 "0"
@@ -875,7 +1017,6 @@ impl JmapCalendarClient {
             .await?;
         Ok(())
     }
-
 }
 
 fn parse_jmap_datetime(s: &str) -> Option<DateTime<Utc>> {
@@ -1038,10 +1179,7 @@ fn parse_jmap_task(account_id: &str, item: &Value) -> Option<CalendarTask> {
         .and_then(|v| v.as_str())
         .and_then(parse_jmap_datetime);
 
-    let priority = item
-        .get("priority")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0) as i32;
+    let priority = item.get("priority").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
     let percent_complete = item
         .get("percentComplete")
         .and_then(|v| v.as_i64())
@@ -1134,6 +1272,24 @@ fn duration_to_iso(d: Duration) -> String {
     }
 }
 
+pub async fn fetch_ical(url: &str) -> Result<String, String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("calendar URL must use HTTP or HTTPS".to_owned());
+    }
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch calendar: HTTP {}",
+            response.status()
+        ));
+    }
+    response.text().await.map_err(|error| error.to_string())
+}
+
 pub enum CalendarClient {
     Dav(CalDavClient),
     Jmap(JmapCalendarClient),
@@ -1144,6 +1300,27 @@ impl CalendarClient {
         match account.calendar_protocol {
             crate::models::account::DavOrJmap::Jmap => Self::Jmap(JmapCalendarClient::new(account)),
             _ => Self::Dav(CalDavClient::new(account)),
+        }
+    }
+
+    pub async fn create_calendar(&self, id: &str, name: &str) -> Result<String, String> {
+        match self {
+            Self::Dav(client) => client.create_calendar(id, name).await,
+            Self::Jmap(client) => client.create_calendar(id, name).await,
+        }
+    }
+
+    pub async fn rename_calendar(&self, calendar: &Calendar, name: &str) -> Result<(), String> {
+        match self {
+            Self::Dav(client) => client.rename_calendar(calendar, name).await,
+            Self::Jmap(client) => client.rename_calendar(calendar, name).await,
+        }
+    }
+
+    pub async fn delete_calendar(&self, calendar: &Calendar) -> Result<(), String> {
+        match self {
+            Self::Dav(client) => client.delete_calendar(calendar).await,
+            Self::Jmap(client) => client.delete_calendar(calendar).await,
         }
     }
 
@@ -1204,8 +1381,6 @@ impl CalendarClient {
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -1291,7 +1466,10 @@ mod tests {
     #[test]
     fn unfold_ics_removes_continuation_whitespace() {
         let folded = "SUMMARY:hello\r\n world\r\nDESCRIPTION:line\n continued";
-        assert_eq!(unfold_ics(folded), "SUMMARY:helloworld\r\nDESCRIPTION:linecontinued");
+        assert_eq!(
+            unfold_ics(folded),
+            "SUMMARY:helloworld\r\nDESCRIPTION:linecontinued"
+        );
     }
 
     #[test]
@@ -1299,7 +1477,11 @@ mod tests {
         let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nUID:evt\r\nSUMMARY:Hello\\, world\r\nDTSTART;VALUE=DATE:20260614\r\nEND:VCALENDAR\r\n";
         let props = parse_ics_properties(ics);
         assert!(props.iter().any(|(k, v)| k == "UID" && v == "evt"));
-        assert!(props.iter().any(|(k, v)| k == "SUMMARY" && v == "Hello\\, world"));
+        assert!(
+            props
+                .iter()
+                .any(|(k, v)| k == "SUMMARY" && v == "Hello\\, world")
+        );
         assert!(props.iter().any(|(k, v)| k == "DTSTART" && v == "20260614"));
     }
 
@@ -1397,7 +1579,10 @@ mod tests {
         let mut event = sample_event();
         event.all_day = true;
         let value = event_to_jmap_json(&event);
-        assert_eq!(value["start"], json!(event.start.format("%Y-%m-%d").to_string()));
+        assert_eq!(
+            value["start"],
+            json!(event.start.format("%Y-%m-%d").to_string())
+        );
         assert_eq!(value["duration"], json!("P1D"));
         assert_eq!(value["showWithoutTime"], json!(true));
     }

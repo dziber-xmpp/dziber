@@ -4,9 +4,10 @@ use crate::db::models::{DbEmail, DbFilter, DbMailAccount, DbMailbox};
 
 use crate::db::establish_connection;
 use crate::models::account::{
-    AuthMode, MailAccount, MailProtocol, ManageSieveConfig, security_from_string, security_to_string,
+    AuthMode, MailAccount, MailProtocol, ManageSieveConfig, security_from_string,
+    security_to_string,
 };
-use crate::models::mail::{Email, EmailAddress, Mailbox, MailFilter};
+use crate::models::mail::{Email, EmailAddress, MailFilter, Mailbox};
 
 fn serialize_list(list: &[String]) -> String {
     list.join("\x1f")
@@ -37,7 +38,10 @@ fn deserialize_addresses(s: &str) -> Vec<EmailAddress> {
         s.split('\x1f')
             .map(|part| {
                 let mut split = part.splitn(2, '\x1e');
-                let name = split.next().filter(|n| !n.is_empty()).map(|n| n.to_string());
+                let name = split
+                    .next()
+                    .filter(|n| !n.is_empty())
+                    .map(|n| n.to_string());
                 let email = split.next().unwrap_or("").to_string();
                 EmailAddress { name, email }
             })
@@ -51,7 +55,11 @@ pub fn save_account(account: &MailAccount) -> Result<(), Box<dyn std::error::Err
     let mut conn = establish_connection();
 
     if !account.password.is_empty() {
-        crate::secrets::store_password(crate::secrets::SERVICE_MAIL, &account.id, &account.password)?;
+        crate::secrets::store_password(
+            crate::secrets::SERVICE_MAIL,
+            &account.id,
+            &account.password,
+        )?;
     }
 
     let (auth, admin_user_val, admin_pass_val) = match &account.auth_mode {
@@ -71,30 +79,24 @@ pub fn save_account(account: &MailAccount) -> Result<(), Box<dyn std::error::Err
         }
     };
 
-    let (
-        mail_proto,
-        imap_server_val,
-        imap_port_val,
-        smtp_server_val,
-        smtp_port_val,
-        security_val,
-    ) = match &account.mail_protocol {
-        MailProtocol::Jmap => ("jmap", None, None, None, None, None),
-        MailProtocol::ImapSmtp {
-            imap_server: imap_server_cfg,
-            imap_port: imap_port_cfg,
-            smtp_server: smtp_server_cfg,
-            smtp_port: smtp_port_cfg,
-            security: security_cfg,
-        } => (
-            "imap_smtp",
-            Some(imap_server_cfg.clone()),
-            Some(*imap_port_cfg as i32),
-            Some(smtp_server_cfg.clone()),
-            Some(*smtp_port_cfg as i32),
-            Some(security_to_string(security_cfg)),
-        ),
-    };
+    let (mail_proto, imap_server_val, imap_port_val, smtp_server_val, smtp_port_val, security_val) =
+        match &account.mail_protocol {
+            MailProtocol::Jmap => ("jmap", None, None, None, None, None),
+            MailProtocol::ImapSmtp {
+                imap_server: imap_server_cfg,
+                imap_port: imap_port_cfg,
+                smtp_server: smtp_server_cfg,
+                smtp_port: smtp_port_cfg,
+                security: security_cfg,
+            } => (
+                "imap_smtp",
+                Some(imap_server_cfg.clone()),
+                Some(*imap_port_cfg as i32),
+                Some(smtp_server_cfg.clone()),
+                Some(*smtp_port_cfg as i32),
+                Some(security_to_string(security_cfg)),
+            ),
+        };
 
     let (sieve_server_val, sieve_port_val, sieve_security_val) = account
         .sieve_config
@@ -156,7 +158,8 @@ pub fn load_accounts() -> Result<Vec<MailAccount>, Box<dyn std::error::Error>> {
             let auth = match a.auth_mode.as_str() {
                 "stalwart" => {
                     let admin_user = a.admin_user.unwrap_or_default();
-                    let admin_pass = if a.admin_pass.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                    let admin_pass = if a.admin_pass.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                    {
                         crate::secrets::get_password(crate::secrets::SERVICE_MAIL_ADMIN, &a.id)
                             .ok()
                             .flatten()
@@ -164,7 +167,10 @@ pub fn load_accounts() -> Result<Vec<MailAccount>, Box<dyn std::error::Error>> {
                     } else {
                         a.admin_pass.unwrap_or_default()
                     };
-                    AuthMode::StalwartImpersonation { admin_user, admin_pass }
+                    AuthMode::StalwartImpersonation {
+                        admin_user,
+                        admin_pass,
+                    }
                 }
                 _ => AuthMode::Basic,
             };
@@ -193,13 +199,14 @@ pub fn load_accounts() -> Result<Vec<MailAccount>, Box<dyn std::error::Error>> {
                 _ => MailProtocol::Jmap,
             };
 
-            let sieve_config = a.sieve_server.filter(|s| !s.is_empty()).map(|server| {
-                ManageSieveConfig {
-                    server,
-                    port: a.sieve_port.map(|p| p as u16).unwrap_or(4190),
-                    security: security_from_string(a.sieve_security.as_deref()),
-                }
-            });
+            let sieve_config =
+                a.sieve_server
+                    .filter(|s| !s.is_empty())
+                    .map(|server| ManageSieveConfig {
+                        server,
+                        port: a.sieve_port.map(|p| p as u16).unwrap_or(4190),
+                        security: security_from_string(a.sieve_security.as_deref()),
+                    });
 
             MailAccount {
                 id: a.id,
@@ -226,10 +233,7 @@ pub fn delete_account(account_id: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn save_filters(
-    acc_id: &str,
-    items: &[MailFilter],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_filters(acc_id: &str, items: &[MailFilter]) -> Result<(), Box<dyn std::error::Error>> {
     use crate::db::schema::filters::dsl::*;
 
     let mut conn = establish_connection();
@@ -256,9 +260,7 @@ pub fn load_filters(acc_id: &str) -> Result<Vec<MailFilter>, Box<dyn std::error:
     use crate::db::schema::filters::dsl::*;
 
     let mut conn = establish_connection();
-    let results: Vec<DbFilter> = filters
-        .filter(account_id.eq(acc_id))
-        .load(&mut conn)?;
+    let results: Vec<DbFilter> = filters.filter(account_id.eq(acc_id)).load(&mut conn)?;
 
     Ok(results
         .into_iter()
@@ -272,10 +274,7 @@ pub fn load_filters(acc_id: &str) -> Result<Vec<MailFilter>, Box<dyn std::error:
         .collect())
 }
 
-pub fn save_mailboxes(
-    acc_id: &str,
-    items: &[Mailbox],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_mailboxes(acc_id: &str, items: &[Mailbox]) -> Result<(), Box<dyn std::error::Error>> {
     use crate::db::schema::mailboxes::dsl::*;
 
     let mut conn = establish_connection();
@@ -300,9 +299,7 @@ pub fn save_mailboxes(
     Ok(())
 }
 
-pub fn load_mailboxes(
-    acc_id: &str,
-) -> Result<Vec<Mailbox>, Box<dyn std::error::Error>> {
+pub fn load_mailboxes(acc_id: &str) -> Result<Vec<Mailbox>, Box<dyn std::error::Error>> {
     use crate::db::schema::mailboxes::dsl::*;
 
     let mut conn = establish_connection();
@@ -428,7 +425,7 @@ mod tests {
     use crate::db::models::DbMailAccount;
     use crate::db::schema::mail_accounts;
     use crate::db::test_helpers::{connection, with_test_db};
-    use crate::models::mail::{Email, EmailAddress, Mailbox, MailFilter};
+    use crate::models::mail::{Email, EmailAddress, MailFilter, Mailbox};
 
     use super::{deserialize_addresses, deserialize_list, serialize_addresses, serialize_list};
 
@@ -530,7 +527,10 @@ mod tests {
         let original = vec!["a\x1fb".to_string(), "c".to_string()];
         let serialized = serialize_list(&original);
         let deserialized = deserialize_list(&serialized);
-        assert_eq!(deserialized, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            deserialized,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
@@ -579,8 +579,11 @@ mod tests {
         let _guard = with_test_db();
         insert_mail_account("mail-acc-1");
 
-        super::save_filters("mail-acc-1", &[sample_filter("f1", "mail-acc-1", "Old", true)])
-            .unwrap();
+        super::save_filters(
+            "mail-acc-1",
+            &[sample_filter("f1", "mail-acc-1", "Old", true)],
+        )
+        .unwrap();
         let replacements = vec![sample_filter("f2", "mail-acc-1", "New", false)];
         super::save_filters("mail-acc-1", &replacements).unwrap();
 
@@ -653,10 +656,12 @@ mod tests {
         let email = sample_email("e1", "mail-acc-1", "Subject", "inbox");
         super::save_emails("mail-acc-1", &[email]).unwrap();
 
-        super::update_email_keywords("e1", &["$seen".to_string(), "$flagged".to_string()])
-            .unwrap();
+        super::update_email_keywords("e1", &["$seen".to_string(), "$flagged".to_string()]).unwrap();
         let loaded = super::load_emails("mail-acc-1", None).unwrap();
-        assert_eq!(loaded[0].keywords, vec!["$seen".to_string(), "$flagged".to_string()]);
+        assert_eq!(
+            loaded[0].keywords,
+            vec!["$seen".to_string(), "$flagged".to_string()]
+        );
     }
 
     #[test]

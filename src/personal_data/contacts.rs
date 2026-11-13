@@ -58,7 +58,10 @@ impl CardDavClient {
             let href = resp.href.clone();
             if href.ends_with('/') && resp.resource_type().iter().any(|t| t == "addressbook") {
                 let rel = extract_rel_path(&href, "card");
-                let name = resp.prop("displayname").unwrap_or("Addressbook").to_string();
+                let name = resp
+                    .prop("displayname")
+                    .unwrap_or("Addressbook")
+                    .to_string();
                 let ctag = resp.prop("getctag").map(|s| s.to_string());
                 books.push(Addressbook {
                     id: rel.trim_end_matches('/').to_string(),
@@ -100,15 +103,16 @@ impl CardDavClient {
         for resp in responses {
             if resp.href.ends_with(".vcf")
                 && let Some(vcard_text) = resp.prop("address-data")
-                    && let Some(contact) = parse_vcard(
-                        &account_id,
-                        &addressbook.id,
-                        &resp.href,
-                        resp.prop("getetag").map(|s| s.to_string()),
-                        vcard_text,
-                    ) {
-                        contacts.push(contact);
-                    }
+                && let Some(contact) = parse_vcard(
+                    &account_id,
+                    &addressbook.id,
+                    &resp.href,
+                    resp.prop("getetag").map(|s| s.to_string()),
+                    vcard_text,
+                )
+            {
+                contacts.push(contact);
+            }
         }
 
         Ok(contacts)
@@ -125,12 +129,7 @@ impl CardDavClient {
         let etag = contact.etag.as_deref();
         let (status, _) = self
             .dav
-            .put(
-                &path,
-                vcard_text,
-                "text/vcard; charset=utf-8",
-                etag,
-            )
+            .put(&path, vcard_text, "text/vcard; charset=utf-8", etag)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -161,7 +160,6 @@ impl CardDavClient {
 
         Ok(())
     }
-
 }
 
 fn first_text(values: &[VCardValue]) -> Option<String> {
@@ -261,10 +259,7 @@ fn serialize_vcard(contact: &ContactCard) -> String {
         "VERSION:3.0".to_string(),
         format!("UID:{}", contact.uid),
         format!("FN:{}", contact.display_name),
-        format!(
-            "N:{};{};;;",
-            contact.last_name, contact.first_name
-        ),
+        format!("N:{};{};;;", contact.last_name, contact.first_name),
     ];
 
     for email in &contact.emails {
@@ -338,10 +333,7 @@ impl JmapContactsClient {
         let response = self
             .jmap
             .request(
-                &[
-                    "urn:ietf:params:jmap:core",
-                    "urn:ietf:params:jmap:contacts",
-                ],
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
                 vec![json!([
                     "AddressBook/get",
                     {
@@ -355,23 +347,24 @@ impl JmapContactsClient {
 
         let mut books = Vec::new();
         if let Some(args) = self.jmap.extract_response(&response, "AddressBook/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                        books.push(Addressbook {
-                            id: id.to_string(),
-                            account_id: self.jmap.account_id.clone(),
-                            href: String::new(),
-                            name: item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Addressbook")
-                                .to_string(),
-                            ctag: None,
-                        });
-                    }
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    books.push(Addressbook {
+                        id: id.to_string(),
+                        account_id: self.jmap.account_id.clone(),
+                        href: String::new(),
+                        name: item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Addressbook")
+                            .to_string(),
+                        ctag: None,
+                    });
                 }
             }
+        }
         Ok(books)
     }
 
@@ -383,10 +376,7 @@ impl JmapContactsClient {
         let response = self
             .jmap
             .request(
-                &[
-                    "urn:ietf:params:jmap:core",
-                    "urn:ietf:params:jmap:contacts",
-                ],
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
                 vec![json!([
                     "ContactCard/get",
                     {
@@ -404,14 +394,16 @@ impl JmapContactsClient {
 
         let mut contacts = Vec::new();
         if let Some(args) = self.jmap.extract_response(&response, "ContactCard/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array()) {
-                for item in list {
-                    if let Some(contact) = parse_jmap_contact(&self.jmap.account_id, item)
-                        && contact.addressbook_id == addressbook.id {
-                            contacts.push(contact);
-                        }
+            && let Some(list) = args.get("list").and_then(|v| v.as_array())
+        {
+            for item in list {
+                if let Some(contact) = parse_jmap_contact(&self.jmap.account_id, item)
+                    && contact.addressbook_id == addressbook.id
+                {
+                    contacts.push(contact);
                 }
             }
+        }
         Ok(contacts)
     }
 
@@ -445,10 +437,7 @@ impl JmapContactsClient {
 
         self.jmap
             .request(
-                &[
-                    "urn:ietf:params:jmap:core",
-                    "urn:ietf:params:jmap:contacts",
-                ],
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
                 vec![method_call],
             )
             .await?;
@@ -462,10 +451,7 @@ impl JmapContactsClient {
         let account_id = self.jmap.account_id.clone();
         self.jmap
             .request(
-                &[
-                    "urn:ietf:params:jmap:core",
-                    "urn:ietf:params:jmap:contacts",
-                ],
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
                 vec![json!([
                     "ContactCard/set",
                     {
@@ -478,7 +464,6 @@ impl JmapContactsClient {
             .await?;
         Ok(())
     }
-
 }
 
 fn parse_jmap_contact(account_id: &str, item: &Value) -> Option<ContactCard> {
@@ -514,9 +499,7 @@ fn parse_jmap_contact(account_id: &str, item: &Value) -> Option<ContactCard> {
     }
 
     if display_name.is_empty() {
-        display_name = format!("{} {}", first_name, last_name)
-            .trim()
-            .to_string();
+        display_name = format!("{} {}", first_name, last_name).trim().to_string();
     }
 
     let emails = item
@@ -524,7 +507,11 @@ fn parse_jmap_contact(account_id: &str, item: &Value) -> Option<ContactCard> {
         .and_then(|v| v.as_object())
         .map(|obj| {
             obj.values()
-                .filter_map(|e| e.get("address").and_then(|a| a.as_str()).map(|s| s.to_string()))
+                .filter_map(|e| {
+                    e.get("address")
+                        .and_then(|a| a.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -662,8 +649,6 @@ impl ContactsClient {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,14 +717,18 @@ mod tests {
             VCardValue::Text("text".into()),
             VCardValue::Component(vec!["a".into(), "b".into()]),
         ];
-        assert_eq!(first_component(&values), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(
+            first_component(&values),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
         assert_eq!(first_component(&[]), None);
     }
 
     #[test]
     fn parse_vcard_extracts_fields() {
         let vcf = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:abc\r\nFN:Alice Smith\r\nN:Smith,Alice\r\nEMAIL;TYPE=INTERNET:alice@example.com\r\nTEL:+1234567890\r\nORG:Example Inc.\r\nNOTE:Hello\\, world\r\nEND:VCARD\r\n";
-        let contact = parse_vcard("acc", "ab", "/card/abc.vcf", Some("etag1".to_string()), vcf).unwrap();
+        let contact =
+            parse_vcard("acc", "ab", "/card/abc.vcf", Some("etag1".to_string()), vcf).unwrap();
         assert_eq!(contact.uid, "abc");
         assert_eq!(contact.id, "abc");
         assert_eq!(contact.display_name, "Alice Smith");
@@ -770,7 +759,8 @@ mod tests {
     #[test]
     fn import_vcards_ignores_garbage_and_empty_input() {
         assert!(import_vcards("", "a", "ab").is_empty());
-        let vcf = "garbage line\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:X\r\nEND:VCARD\r\ntrailing";
+        let vcf =
+            "garbage line\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:X\r\nEND:VCARD\r\ntrailing";
         let imported = import_vcards(vcf, "a", "ab");
         assert_eq!(imported.len(), 1);
         assert_eq!(imported[0].display_name, "X");

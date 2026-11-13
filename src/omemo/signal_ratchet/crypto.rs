@@ -1,9 +1,9 @@
-use aes::cipher::{BlockEncryptMut, BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::signal_ratchet::keys::{CURVE25519_KEY_LEN, IdentityKeyPair, KeyPair};
+use super::super::signal_ratchet::keys::{CURVE25519_KEY_LEN, IdentityKeyPair, KeyPair};
 
 pub const DISCONTINUITY_BYTES: [u8; 32] = [0xFF; 32];
 pub const WHISPER_TEXT: &[u8] = b"WhisperText";
@@ -45,14 +45,13 @@ pub fn aes_cbc_encrypt(key: &[u8; 32], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u
 /// Decrypt using AES-256-CBC with PKCS#7 padding.
 pub fn aes_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
     let cipher = Aes256CbcDec::new(key.into(), iv.into());
-    cipher.decrypt_padded_vec_mut::<aes::cipher::block_padding::Pkcs7>(ciphertext).ok()
+    cipher
+        .decrypt_padded_vec_mut::<aes::cipher::block_padding::Pkcs7>(ciphertext)
+        .ok()
 }
 
 /// Derive a new root key and chain key from a root key and a DH output.
-pub fn kdf_root(
-    root_key: &[u8; 32],
-    dh_output: &[u8; 32],
-) -> ([u8; 32], [u8; 32]) {
+pub fn kdf_root(root_key: &[u8; 32], dh_output: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let okm = hkdf_sha256(Some(root_key), dh_output, WHISPER_RATCHET, 64);
     let mut new_root = [0u8; 32];
     let mut chain_key = [0u8; 32];
@@ -107,7 +106,9 @@ pub fn x3dh_master_secret_alice(
     their_identity_key: &[u8; CURVE25519_KEY_LEN],
     their_one_time_pre_key: &[u8; CURVE25519_KEY_LEN],
 ) -> Option<Zeroizing<Vec<u8>>> {
-    let dh1 = our_identity.key_pair().diffie_hellman(their_signed_pre_key)?;
+    let dh1 = our_identity
+        .key_pair()
+        .diffie_hellman(their_signed_pre_key)?;
     let dh2 = our_base_key.diffie_hellman(their_identity_key)?;
     let dh3 = our_base_key.diffie_hellman(their_signed_pre_key)?;
     let dh4 = our_base_key.diffie_hellman(their_one_time_pre_key)?;

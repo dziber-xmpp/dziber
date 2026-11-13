@@ -12,7 +12,10 @@ pub mod proto;
 pub mod session;
 
 pub use bundle::PreKeyBundle;
-pub use keys::{IdentityKeyPair, KeyPair, PreKey, SignedPreKey, CURVE25519_KEY_LEN, serialize_public_key, verify_signature};
+pub use keys::{
+    CURVE25519_KEY_LEN, IdentityKeyPair, KeyPair, PreKey, SignedPreKey, serialize_public_key,
+    verify_signature,
+};
 pub use session::{CiphertextMessage, Session};
 
 /// Errors returned by the legacy signal ratchet.

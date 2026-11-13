@@ -39,7 +39,10 @@ impl KeyPair {
     }
 
     /// Perform an X25519 Diffie-Hellman exchange with `other_public`.
-    pub fn diffie_hellman(&self, other_public: &[u8; CURVE25519_KEY_LEN]) -> Option<[u8; CURVE25519_KEY_LEN]> {
+    pub fn diffie_hellman(
+        &self,
+        other_public: &[u8; CURVE25519_KEY_LEN],
+    ) -> Option<[u8; CURVE25519_KEY_LEN]> {
         let public = X25519PublicKey::from(*other_public);
         let secret = X25519StaticSecret::from(self.secret);
         let shared = secret.diffie_hellman(&public);
@@ -77,11 +80,15 @@ pub struct IdentityKeyPair {
 
 impl IdentityKeyPair {
     pub fn generate<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
-        Self { inner: KeyPair::generate(rng) }
+        Self {
+            inner: KeyPair::generate(rng),
+        }
     }
 
     pub fn from_secret(secret: [u8; CURVE25519_KEY_LEN]) -> Self {
-        Self { inner: KeyPair::from_secret(secret) }
+        Self {
+            inner: KeyPair::from_secret(secret),
+        }
     }
 
     pub fn key_pair(&self) -> &KeyPair {
@@ -114,7 +121,10 @@ pub struct PreKey {
 
 impl PreKey {
     pub fn generate<R: RngCore + CryptoRng>(id: u32, rng: &mut R) -> Self {
-        Self { id, key_pair: KeyPair::generate(rng) }
+        Self {
+            id,
+            key_pair: KeyPair::generate(rng),
+        }
     }
 }
 
@@ -147,7 +157,11 @@ impl SignedPreKey {
         let to_sign = serialize_public_key(key_pair.public_key_bytes());
         let private_key = xeddsa::xed25519::PrivateKey::from(identity.secret_key_bytes());
         let signature = private_key.sign(&to_sign, rng);
-        Self { id, key_pair, signature }
+        Self {
+            id,
+            key_pair,
+            signature,
+        }
     }
 
     /// Verify the signature using the provided identity public key.

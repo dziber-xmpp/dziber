@@ -4,14 +4,14 @@ use rand_core::{CryptoRng, RngCore};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::signal_ratchet::Error;
-use crate::signal_ratchet::bundle::PreKeyBundle;
-use crate::signal_ratchet::crypto::{
+use super::super::signal_ratchet::Error;
+use super::super::signal_ratchet::bundle::PreKeyBundle;
+use super::super::signal_ratchet::crypto::{
     aes_cbc_decrypt, aes_cbc_encrypt, compute_mac, derive_initial_root_and_chain,
     derive_message_keys, kdf_chain, kdf_root, x3dh_master_secret_alice, x3dh_master_secret_bob,
 };
-use crate::signal_ratchet::keys::{IdentityKeyPair, KeyPair, serialize_public_key};
-use crate::signal_ratchet::proto::{PreKeySignalMessage, SignalMessage};
+use super::super::signal_ratchet::keys::{IdentityKeyPair, KeyPair, serialize_public_key};
+use super::super::signal_ratchet::proto::{PreKeySignalMessage, SignalMessage};
 
 const MAX_FORWARD_JUMPS: u32 = 2000;
 const CURRENT_VERSION: u8 = 3;
@@ -60,7 +60,10 @@ impl core::fmt::Debug for Session {
         f.debug_struct("Session")
             .field("session_version", &self.session_version)
             .field("local_identity", &hex::encode(self.local_identity))
-            .field("remote_identity", &self.remote_identity.as_ref().map(hex::encode))
+            .field(
+                "remote_identity",
+                &self.remote_identity.as_ref().map(hex::encode),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -122,7 +125,9 @@ impl Session {
 
         // Immediately advance the root to create our first sending chain.
         let our_ratchet_key = KeyPair::generate(rng);
-        let dh = our_ratchet_key.diffie_hellman(&their_ratchet_key).ok_or(Error::NonContributoryKey)?;
+        let dh = our_ratchet_key
+            .diffie_hellman(&their_ratchet_key)
+            .ok_or(Error::NonContributoryKey)?;
         let (root_key, sender_chain_key) = kdf_root(&root_key, &dh);
 
         Ok(Session {
@@ -158,7 +163,9 @@ impl Session {
         message_bytes: &[u8],
     ) -> Result<(Self, Vec<u8>, u32), Error> {
         if message_bytes.is_empty() || message_bytes[0] != VERSIONED_VERSION {
-            return Err(Error::UnsupportedVersion(message_bytes.first().copied().unwrap_or(0)));
+            return Err(Error::UnsupportedVersion(
+                message_bytes.first().copied().unwrap_or(0),
+            ));
         }
         let prekey_message = PreKeySignalMessage::decode(&message_bytes[1..])?;
 
@@ -232,7 +239,11 @@ impl Session {
         body.extend_from_slice(&proto_bytes);
 
         let local_id = serialize_public_key(&self.local_identity);
-        let remote_id = serialize_public_key(self.remote_identity.as_ref().ok_or(Error::MissingRemoteIdentity)?);
+        let remote_id = serialize_public_key(
+            self.remote_identity
+                .as_ref()
+                .ok_or(Error::MissingRemoteIdentity)?,
+        );
         let mac = compute_mac(&mac_key, &local_id, &remote_id, &body);
         body.extend_from_slice(&mac);
 
@@ -263,7 +274,9 @@ impl Session {
     pub fn decrypt(&mut self, message_bytes: &[u8], is_prekey: bool) -> Result<Vec<u8>, Error> {
         if is_prekey {
             if message_bytes.is_empty() || message_bytes[0] != VERSIONED_VERSION {
-                return Err(Error::UnsupportedVersion(message_bytes.first().copied().unwrap_or(0)));
+                return Err(Error::UnsupportedVersion(
+                    message_bytes.first().copied().unwrap_or(0),
+                ));
             }
             let prekey_message = PreKeySignalMessage::decode(&message_bytes[1..])?;
             if self.remote_identity.is_none() {
@@ -275,10 +288,7 @@ impl Session {
         }
     }
 
-    fn decrypt_signal_message(
-        &mut self,
-        message_bytes: &[u8],
-    ) -> Result<Vec<u8>, Error> {
+    fn decrypt_signal_message(&mut self, message_bytes: &[u8]) -> Result<Vec<u8>, Error> {
         if message_bytes.len() < 1 + 8 {
             return Err(Error::InvalidMessage("message too short".into()));
         }
@@ -305,7 +315,9 @@ impl Session {
                 let pos = self
                     .skipped_message_keys
                     .iter()
-                    .position(|(k, c, _)| k == &proto_message.ratchet_key && *c == proto_message.counter)
+                    .position(|(k, c, _)| {
+                        k == &proto_message.ratchet_key && *c == proto_message.counter
+                    })
                     .ok_or_else(|| Error::DuplicateMessage)?;
                 let (_, _, keys) = self.skipped_message_keys.remove(pos);
                 keys
@@ -320,24 +332,39 @@ impl Session {
         };
 
         let local_id = serialize_public_key(&self.local_identity);
-        let remote_id = serialize_public_key(self.remote_identity.as_ref().ok_or(Error::MissingRemoteIdentity)?);
+        let remote_id = serialize_public_key(
+            self.remote_identity
+                .as_ref()
+                .ok_or(Error::MissingRemoteIdentity)?,
+        );
         let expected_mac = compute_mac(&message_keys.mac_key, &remote_id, &local_id, signed_part);
         if expected_mac.ct_eq(their_mac).unwrap_u8() == 0 {
             return Err(Error::BadMac);
         }
 
-        let plaintext = aes_cbc_decrypt(&message_keys.cipher_key, &message_keys.iv, &proto_message.ciphertext)
-            .ok_or(Error::DecryptionFailed)?;
+        let plaintext = aes_cbc_decrypt(
+            &message_keys.cipher_key,
+            &message_keys.iv,
+            &proto_message.ciphertext,
+        )
+        .ok_or(Error::DecryptionFailed)?;
 
         Ok(plaintext)
     }
 
     fn maybe_step_receiving_ratchet(&mut self, message: &SignalMessage) -> Result<(), Error> {
-        if self.receiving_chains.iter().any(|(k, _)| k == &message.ratchet_key) {
+        if self
+            .receiving_chains
+            .iter()
+            .any(|(k, _)| k == &message.ratchet_key)
+        {
             return Ok(());
         }
 
-        let our_ratchet_key = self.our_ratchet_key.as_ref().ok_or(Error::MissingLocalKey)?;
+        let our_ratchet_key = self
+            .our_ratchet_key
+            .as_ref()
+            .ok_or(Error::MissingLocalKey)?;
         let dh = our_ratchet_key
             .diffie_hellman(&message.ratchet_key)
             .ok_or(Error::NonContributoryKey)?;
@@ -345,7 +372,11 @@ impl Session {
         // If we have an existing receiving chain, fill in skipped message keys up to
         // previousCounter and then drop it.
         if let Some(their_old_key) = self.their_ratchet_key {
-            if let Some(pos) = self.receiving_chains.iter().position(|(k, _)| k == &their_old_key) {
+            if let Some(pos) = self
+                .receiving_chains
+                .iter()
+                .position(|(k, _)| k == &their_old_key)
+            {
                 let (_, mut old_chain) = self.receiving_chains.remove(pos);
                 Self::fill_message_keys(
                     &mut old_chain,
@@ -388,11 +419,7 @@ impl Session {
             .diffie_hellman(&their_ratchet_key)
             .ok_or(Error::NonContributoryKey)?;
 
-        let previous_counter = self
-            .sending_chain
-            .as_ref()
-            .map(|c| c.index)
-            .unwrap_or(0);
+        let previous_counter = self.sending_chain.as_ref().map(|c| c.index).unwrap_or(0);
 
         let (new_root, new_chain_key) = kdf_root(&self.root_key, &dh);
         self.root_key = new_root;
@@ -422,7 +449,15 @@ impl Session {
         while chain.index < target_counter {
             let (next_chain_key, message_key) = kdf_chain(&chain.key);
             let (cipher_key, mac_key, iv) = derive_message_keys(&message_key);
-            skipped.push((*ratchet_key, chain.index, MessageKeys { cipher_key, mac_key, iv }));
+            skipped.push((
+                *ratchet_key,
+                chain.index,
+                MessageKeys {
+                    cipher_key,
+                    mac_key,
+                    iv,
+                },
+            ));
             chain.key = next_chain_key;
             chain.index += 1;
         }
@@ -430,7 +465,11 @@ impl Session {
         let (next_chain_key, message_key) = kdf_chain(&chain.key);
         let keys = {
             let (cipher_key, mac_key, iv) = derive_message_keys(&message_key);
-            MessageKeys { cipher_key, mac_key, iv }
+            MessageKeys {
+                cipher_key,
+                mac_key,
+                iv,
+            }
         };
         chain.key = next_chain_key;
         chain.index += 1;
@@ -494,7 +533,15 @@ impl Session {
             let cipher_key = read_array32(bytes, &mut pos)?;
             let mac_key = read_array32(bytes, &mut pos)?;
             let iv = read_array16(bytes, &mut pos)?;
-            skipped_message_keys.push((k, index, MessageKeys { cipher_key, mac_key, iv }));
+            skipped_message_keys.push((
+                k,
+                index,
+                MessageKeys {
+                    cipher_key,
+                    mac_key,
+                    iv,
+                },
+            ));
         }
         let local_identity = read_array32(bytes, &mut pos)?;
         let remote_identity = read_option_array32(bytes, &mut pos)?;
@@ -520,7 +567,9 @@ impl Session {
         let cipher = Aes256Gcm::new_from_slice(key).expect("valid AES-256 key length");
         let nonce_bytes = rand::random::<[u8; 12]>();
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let mut ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).expect("encryption");
+        let mut ciphertext = cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .expect("encryption");
         let mut out = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
         out.extend_from_slice(&nonce_bytes);
         out.append(&mut ciphertext);
@@ -692,8 +741,8 @@ fn read_option_pending_pre_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::omemo::signal_ratchet::keys::{PreKey, SignedPreKey};
     use rand::thread_rng;
-    use crate::signal_ratchet::keys::{PreKey, SignedPreKey};
 
     fn make_bundle(
         identity: &IdentityKeyPair,
@@ -774,14 +823,8 @@ mod tests {
         let restored = Session::unpickle(&pickled, &key).unwrap();
 
         // The restored session should have the same public state and be able to decrypt.
-        assert_eq!(
-            restored.local_identity,
-            alice.local_identity
-        );
-        assert_eq!(
-            restored.remote_identity,
-            alice.remote_identity
-        );
+        assert_eq!(restored.local_identity, alice.local_identity);
+        assert_eq!(restored.remote_identity, alice.remote_identity);
     }
 
     #[test]

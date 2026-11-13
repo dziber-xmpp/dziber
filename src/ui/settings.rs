@@ -1,5 +1,5 @@
-use iced::widget::{Button, Column, checkbox, pick_list, row, text, text_input};
 use iced::Element;
+use iced::widget::{Button, Column, checkbox, pick_list, row, text, text_input};
 
 use crate::models::account::{
     AuthMode, CalendarAccount, ContactsAccount, DavOrJmap, MailAccount, MailProtocol, MailSecurity,
@@ -58,7 +58,13 @@ pub struct AccountFormState {
 }
 
 impl AccountFormState {
-    fn from_account(id: &str, server_url: &str, username: &str, password: &str, auth_mode: &AuthMode) -> Self {
+    fn from_account(
+        id: &str,
+        server_url: &str,
+        username: &str,
+        password: &str,
+        auth_mode: &AuthMode,
+    ) -> Self {
         let mut state = Self {
             id: Some(id.to_string()),
             server_url: server_url.to_string(),
@@ -66,7 +72,11 @@ impl AccountFormState {
             password: password.to_string(),
             ..Self::default()
         };
-        if let AuthMode::StalwartImpersonation { admin_user, admin_pass } = auth_mode {
+        if let AuthMode::StalwartImpersonation {
+            admin_user,
+            admin_pass,
+        } = auth_mode
+        {
             state.use_impersonation = true;
             state.admin_user = admin_user.clone();
             state.admin_pass = admin_pass.clone();
@@ -293,7 +303,9 @@ impl SettingsState {
         calendar: Option<&CalendarAccount>,
     ) -> Self {
         Self {
-            mail: mail.map(MailSettingsState::from_account).unwrap_or_default(),
+            mail: mail
+                .map(MailSettingsState::from_account)
+                .unwrap_or_default(),
             contacts: contacts
                 .map(ProtocolSettingsState::from_contacts)
                 .unwrap_or_default(),
@@ -378,14 +390,11 @@ fn base_inputs<'a>(
     state: &'a AccountFormState,
 ) -> Vec<Element<'a, Message>> {
     vec![
-        text_input(
-            "Server URL (https://mail.example.com)",
-            &state.server_url,
-        )
-        .on_input(move |v| {
-            SettingsMessage::Changed(category, AccountField::ServerUrl(v)).into_message()
-        })
-        .into(),
+        text_input("Server URL (https://mail.example.com)", &state.server_url)
+            .on_input(move |v| {
+                SettingsMessage::Changed(category, AccountField::ServerUrl(v)).into_message()
+            })
+            .into(),
         text_input("Username / Email", &state.username)
             .on_input(move |v| {
                 SettingsMessage::Changed(category, AccountField::Username(v)).into_message()
@@ -400,8 +409,7 @@ fn base_inputs<'a>(
         checkbox(state.use_impersonation)
             .label("Stalwart master-user impersonation")
             .on_toggle(move |v| {
-                SettingsMessage::Changed(category, AccountField::UseImpersonation(v))
-                    .into_message()
+                SettingsMessage::Changed(category, AccountField::UseImpersonation(v)).into_message()
             })
             .into(),
     ]
@@ -427,7 +435,11 @@ fn admin_inputs<'a>(
 }
 
 pub fn view(state: &SettingsState) -> Element<'_, Message> {
-    let security_options = vec!["tls".to_string(), "starttls".to_string(), "none".to_string()];
+    let security_options = vec![
+        "tls".to_string(),
+        "starttls".to_string(),
+        "none".to_string(),
+    ];
     let dav_jmap_options = vec!["dav".to_string(), "jmap".to_string()];
 
     let mut content = Column::new()
@@ -441,13 +453,14 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
     }
 
     let mail_protocols = vec!["jmap".to_string(), "imap_smtp".to_string()];
-    content = content
-        .push(text("Mail protocol").size(12))
-        .push(pick_list(
-            mail_protocols,
-            Some(state.mail.protocol.clone()),
-            |v| SettingsMessage::Changed(AccountCategory::Mail, AccountField::Protocol(v)).into_message(),
-        ));
+    content = content.push(text("Mail protocol").size(12)).push(pick_list(
+        mail_protocols,
+        Some(state.mail.protocol.clone()),
+        |v| {
+            SettingsMessage::Changed(AccountCategory::Mail, AccountField::Protocol(v))
+                .into_message()
+        },
+    ));
 
     if state.mail.protocol == "imap_smtp" {
         content = content
@@ -479,7 +492,10 @@ pub fn view(state: &SettingsState) -> Element<'_, Message> {
             .push(pick_list(
                 security_options.clone(),
                 Some(state.mail.security.clone()),
-                |v| SettingsMessage::Changed(AccountCategory::Mail, AccountField::Security(v)).into_message(),
+                |v| {
+                    SettingsMessage::Changed(AccountCategory::Mail, AccountField::Security(v))
+                        .into_message()
+                },
             ));
     }
 

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::account::OmemoAccount;
-use crate::manager::CachedBundle;
-use crate::signal_ratchet;
-use crate::trust::TrustStore;
+use super::account::OmemoAccount;
+use super::manager::CachedBundle;
+use super::signal_ratchet;
+use super::trust::TrustStore;
 
 /// Persistence interface for OMEMO state.
 ///
@@ -41,9 +41,7 @@ pub trait OmemoStore: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     /// Load cached device lists.
-    fn load_device_lists(
-        &self,
-    ) -> Result<HashMap<String, Vec<u32>>, Box<dyn std::error::Error>>;
+    fn load_device_lists(&self) -> Result<HashMap<String, Vec<u32>>, Box<dyn std::error::Error>>;
 
     /// Persist cached device lists.
     fn save_device_lists(
@@ -66,10 +64,7 @@ pub trait OmemoStore: Send + Sync {
     fn load_trust_store(&self) -> Result<TrustStore, Box<dyn std::error::Error>>;
 
     /// Persist the trust store.
-    fn save_trust_store(
-        &self,
-        store: &TrustStore,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    fn save_trust_store(&self, store: &TrustStore) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 /// In-memory [`OmemoStore`] implementation for tests.
@@ -106,9 +101,7 @@ impl OmemoStore for MemoryStore {
     ) -> Result<Option<OmemoAccount>, Box<dyn std::error::Error>> {
         let account = self.account.lock().unwrap();
         Ok(match account.as_ref() {
-            Some((pickle, stored_key)) if key == stored_key => {
-                OmemoAccount::unpickle(pickle, key)
-            }
+            Some((pickle, stored_key)) if key == stored_key => OmemoAccount::unpickle(pickle, key),
             _ => None,
         })
     }
@@ -139,9 +132,7 @@ impl OmemoStore for MemoryStore {
         Ok(())
     }
 
-    fn load_device_lists(
-        &self,
-    ) -> Result<HashMap<String, Vec<u32>>, Box<dyn std::error::Error>> {
+    fn load_device_lists(&self) -> Result<HashMap<String, Vec<u32>>, Box<dyn std::error::Error>> {
         Ok(self.device_lists.lock().unwrap().clone())
     }
 
@@ -171,10 +162,7 @@ impl OmemoStore for MemoryStore {
         Ok(self.trust_store.lock().unwrap().clone())
     }
 
-    fn save_trust_store(
-        &self,
-        store: &TrustStore,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn save_trust_store(&self, store: &TrustStore) -> Result<(), Box<dyn std::error::Error>> {
         *self.trust_store.lock().unwrap() = store.clone();
         Ok(())
     }

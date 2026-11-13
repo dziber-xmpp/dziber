@@ -138,8 +138,7 @@ fn contact_detail_view(state: &ContactsState) -> Element<'_, Message> {
             .push(
                 row![
                     Button::new("Edit").on_press(ContactsMessage::NewContact.into_message()),
-                    Button::new("Delete")
-                        .on_press(ContactsMessage::DeleteContact.into_message()),
+                    Button::new("Delete").on_press(ContactsMessage::DeleteContact.into_message()),
                 ]
                 .spacing(8),
             );

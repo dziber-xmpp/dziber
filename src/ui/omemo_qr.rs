@@ -1,6 +1,6 @@
 use qrcodegen::{QrCode, QrCodeEcc};
 
-use dziber_omemo::OmemoManager;
+use crate::omemo::OmemoManager;
 
 fn hex_lower(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len() * 2);

@@ -3,7 +3,9 @@ use diesel::prelude::*;
 use crate::db::establish_connection;
 use crate::db::models::{DbCalendar, DbCalendarAccount, DbEvent, DbTask};
 
-use crate::models::account::{AuthMode, CalendarAccount, dav_or_jmap_from_string, dav_or_jmap_to_string};
+use crate::models::account::{
+    AuthMode, CalendarAccount, dav_or_jmap_from_string, dav_or_jmap_to_string,
+};
 use crate::models::calendar::Calendar;
 use crate::models::event::CalendarEvent;
 use crate::models::task::CalendarTask;
@@ -78,7 +80,8 @@ pub fn load_accounts() -> Result<Vec<CalendarAccount>, Box<dyn std::error::Error
             let auth = match a.auth_mode.as_str() {
                 "stalwart" => {
                     let admin_user = a.admin_user.unwrap_or_default();
-                    let admin_pass = if a.admin_pass.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                    let admin_pass = if a.admin_pass.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+                    {
                         crate::secrets::get_password(crate::secrets::SERVICE_CALENDAR_ADMIN, &a.id)
                             .ok()
                             .flatten()
@@ -86,7 +89,10 @@ pub fn load_accounts() -> Result<Vec<CalendarAccount>, Box<dyn std::error::Error
                     } else {
                         a.admin_pass.unwrap_or_default()
                     };
-                    AuthMode::StalwartImpersonation { admin_user, admin_pass }
+                    AuthMode::StalwartImpersonation {
+                        admin_user,
+                        admin_pass,
+                    }
                 }
                 _ => AuthMode::Basic,
             };
@@ -115,10 +121,7 @@ pub fn delete_account(account_id: &str) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-pub fn save_calendars(
-    acc_id: &str,
-    items: &[Calendar],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_calendars(acc_id: &str, items: &[Calendar]) -> Result<(), Box<dyn std::error::Error>> {
     use crate::db::schema::calendars::dsl::*;
 
     let mut conn = establish_connection();
@@ -238,11 +241,7 @@ pub fn load_events(
         .collect())
 }
 
-
-pub fn save_tasks(
-    acc_id: &str,
-    items: &[CalendarTask],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_tasks(acc_id: &str, items: &[CalendarTask]) -> Result<(), Box<dyn std::error::Error>> {
     use crate::db::schema::tasks::dsl::*;
 
     let mut conn = establish_connection();
@@ -316,7 +315,6 @@ pub fn load_tasks(
         })
         .collect())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -430,10 +428,13 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].name, "Personal");
         assert_eq!(loaded[1].name, "Work");
-        assert_eq!(loaded, vec![
-            sample_calendar("cal1", "cal-acc-1", "Personal"),
-            sample_calendar("cal2", "cal-acc-1", "Work"),
-        ]);
+        assert_eq!(
+            loaded,
+            vec![
+                sample_calendar("cal1", "cal-acc-1", "Personal"),
+                sample_calendar("cal2", "cal-acc-1", "Work"),
+            ]
+        );
     }
 
     #[test]

@@ -199,7 +199,12 @@ mod tests {
     use crate::db::test_helpers::with_test_db;
     use crate::models::message::{Direction, Message, MessageStatus};
 
-    fn sample_message(id: &str, status: MessageStatus, direction: Direction, body: &str) -> Message {
+    fn sample_message(
+        id: &str,
+        status: MessageStatus,
+        direction: Direction,
+        body: &str,
+    ) -> Message {
         Message {
             id: id.to_string(),
             from: "from@example.com".to_string(),

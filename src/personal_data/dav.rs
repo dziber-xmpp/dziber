@@ -1,5 +1,5 @@
 use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE, IF_MATCH};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, IF_MATCH};
 use roxmltree::{Document, Node};
 
 const FRAGMENT: &AsciiSet = &CONTROLS
@@ -288,7 +288,11 @@ impl DavClient {
         let path = resp.url().path().to_string();
         // Ensure the path ends with a slash so callers can append names safely.
         if path.len() > 1 {
-            Some(if path.ends_with('/') { path } else { format!("{}/", path) })
+            Some(if path.ends_with('/') {
+                path
+            } else {
+                format!("{}/", path)
+            })
         } else {
             None
         }

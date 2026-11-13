@@ -108,7 +108,10 @@ impl SrtpContext {
         Self { cipher, salt }
     }
 
-    fn nonce_for(&self, seq: u16) -> GenericArray<u8, <Aes256Gcm as aes_gcm::aead::AeadCore>::NonceSize> {
+    fn nonce_for(
+        &self,
+        seq: u16,
+    ) -> GenericArray<u8, <Aes256Gcm as aes_gcm::aead::AeadCore>::NonceSize> {
         let mut n = self.salt;
         n[10] ^= (seq >> 8) as u8;
         n[11] ^= (seq & 0xff) as u8;
@@ -117,14 +120,13 @@ impl SrtpContext {
 
     pub fn protect(&self, pkt: &RtpPacket) -> Option<Vec<u8>> {
         let pt = pkt.to_bytes();
-        self.cipher.encrypt(&self.nonce_for(pkt.sequence), pt.as_ref()).ok()
+        self.cipher
+            .encrypt(&self.nonce_for(pkt.sequence), pt.as_ref())
+            .ok()
     }
 
     pub fn unprotect(&self, seq_hint: u16, data: &[u8]) -> Option<RtpPacket> {
-        let pt = self
-            .cipher
-            .decrypt(&self.nonce_for(seq_hint), data)
-            .ok()?;
+        let pt = self.cipher.decrypt(&self.nonce_for(seq_hint), data).ok()?;
         RtpPacket::from_bytes(&pt)
     }
 }

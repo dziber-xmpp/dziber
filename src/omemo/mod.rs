@@ -32,8 +32,14 @@ mod tests {
     #[test]
     fn namespace_constants() {
         assert_eq!(NS_OMEMO_V0, "eu.siacs.conversations.axolotl");
-        assert_eq!(NS_OMEMO_V0_DEVICES, "eu.siacs.conversations.axolotl.devicelist");
-        assert_eq!(NS_OMEMO_V0_BUNDLES, "eu.siacs.conversations.axolotl.bundles");
+        assert_eq!(
+            NS_OMEMO_V0_DEVICES,
+            "eu.siacs.conversations.axolotl.devicelist"
+        );
+        assert_eq!(
+            NS_OMEMO_V0_BUNDLES,
+            "eu.siacs.conversations.axolotl.bundles"
+        );
     }
 
     #[test]

@@ -78,7 +78,9 @@ pub struct ImapSmtpClient {
 
 impl ImapSmtpClient {
     pub fn new(account: &MailAccount) -> Self {
-        Self { account: account.clone() }
+        Self {
+            account: account.clone(),
+        }
     }
 
     fn imap_params(&self) -> Result<(&str, u16, &MailSecurity), String> {
@@ -222,7 +224,9 @@ impl ImapSmtpClient {
 
         let mut emails = Vec::new();
         for uid in uids {
-            if let Some(email) = fetch_email_by_uid(&mut session, uid, mailbox_id, &account_id).await {
+            if let Some(email) =
+                fetch_email_by_uid(&mut session, uid, mailbox_id, &account_id).await
+            {
                 emails.push(email);
             }
         }
@@ -439,10 +443,7 @@ async fn fetch_email_by_uid(
     mailbox_id: &str,
     account_id: &str,
 ) -> Option<Email> {
-    let fetches: Vec<_> = match session
-        .uid_fetch(uid.to_string(), "RFC822 FLAGS")
-        .await
-    {
+    let fetches: Vec<_> = match session.uid_fetch(uid.to_string(), "RFC822 FLAGS").await {
         Ok(stream) => match stream.try_collect().await {
             Ok(v) => v,
             Err(_) => return None,
@@ -524,7 +525,11 @@ fn parse_addresses(value: Option<&ParserAddress<'_>>) -> Vec<EmailAddress> {
         .into_iter()
         .map(|a| EmailAddress {
             name: a.name.as_ref().map(|n| n.to_string()),
-            email: a.address.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+            email: a
+                .address
+                .as_ref()
+                .map(|e| e.to_string())
+                .unwrap_or_default(),
         })
         .collect()
 }
@@ -568,7 +573,10 @@ mod tests {
 
     #[test]
     fn parse_email_id_roundtrips_with_email_id() {
-        assert_eq!(parse_email_id("123\x1fINBOX"), Ok((123, "INBOX".to_string())));
+        assert_eq!(
+            parse_email_id("123\x1fINBOX"),
+            Ok((123, "INBOX".to_string()))
+        );
         assert_eq!(email_id(123, "INBOX"), "123\x1fINBOX");
         assert!(parse_email_id("abc\x1fINBOX").is_err());
         assert!(parse_email_id("123").is_err());

@@ -144,7 +144,11 @@ pub fn build_message_stanza(
         .attr(nc("to"), to)
         .attr(nc("type"), "chat")
         .attr(nc("id"), id)
-        .append(Element::builder("body", "jabber:client").append(fallback).build())
+        .append(
+            Element::builder("body", "jabber:client")
+                .append(fallback)
+                .build(),
+        )
         .append(encrypted_el)
         .append(Element::builder("request", "urn:xmpp:receipts").build())
         .append(Element::builder("markable", "urn:xmpp:chat-markers:0").build())

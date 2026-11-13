@@ -22,15 +22,14 @@ use chrono::{DateTime, Utc};
 
 use crate::models::contact::{Contact, Presence, Show, Subscription};
 use crate::models::message::{Direction, Message, MessageStatus};
-use dziber_omemo::{NS_OMEMO_V0, NS_OMEMO_V0_BUNDLES, NS_OMEMO_V0_DEVICES, OmemoManager};
-use dziber_omemo::bundle::{build_bundle_element_v0 as build_bundle_element, parse_bundle};
-use dziber_omemo::device::{
+use crate::omemo::bundle::{build_bundle_element_v0 as build_bundle_element, parse_bundle};
+use crate::omemo::device::{
     Device, build_device_list_element_v0 as build_device_list_element, parse_device_list,
 };
-use dziber_omemo::message::{
-    build_message_stanza, parse_encrypted_message, EncryptedMessage as OmemoEncryptedMessage,
+use crate::omemo::message::{
+    EncryptedMessage as OmemoEncryptedMessage, build_message_stanza, parse_encrypted_message,
 };
-
+use crate::omemo::{NS_OMEMO_V0, NS_OMEMO_V0_BUNDLES, NS_OMEMO_V0_DEVICES, OmemoManager};
 
 const NS_CARBONS: &str = "urn:xmpp:carbons:2";
 const NS_FORWARD: &str = "urn:xmpp:forward:0";
@@ -1061,10 +1060,7 @@ fn build_jingle_session_initiate_iq(to: &str, sid: &str, our_jid: Option<&str>) 
         )
         .build();
     let jingle = Element::builder("jingle", NS_JINGLE)
-        .attr(
-            "action".try_into().expect("valid attr"),
-            "session-initiate",
-        )
+        .attr("action".try_into().expect("valid attr"), "session-initiate")
         .attr("sid".try_into().expect("valid attr"), sid.to_string())
         .attr("initiator".try_into().expect("valid attr"), initiator)
         .append(content)
@@ -1208,12 +1204,18 @@ fn build_jingle_transport_info_iq(
         .build();
     for c in candidates {
         let cand = Element::builder("candidate", NS_JINGLE_ICE)
-            .attr("foundation".try_into().expect("valid attr"), c.foundation.clone())
+            .attr(
+                "foundation".try_into().expect("valid attr"),
+                c.foundation.clone(),
+            )
             .attr(
                 "component".try_into().expect("valid attr"),
                 c.component.to_string(),
             )
-            .attr("protocol".try_into().expect("valid attr"), c.protocol.clone())
+            .attr(
+                "protocol".try_into().expect("valid attr"),
+                c.protocol.clone(),
+            )
             .attr(
                 "priority".try_into().expect("valid attr"),
                 c.priority.to_string(),
@@ -1344,7 +1346,10 @@ fn build_iq_jingle_error_reply(to: Option<Jid>, id: String, kind: &str) -> Iq {
     };
     let mut error = Element::builder("error", "jabber:client")
         .attr("type".try_into().expect("valid attr"), "cancel")
-        .append(Element::builder(condition, "urn:ietf:params:xml:ns:xmpp-stanzas"))
+        .append(Element::builder(
+            condition,
+            "urn:ietf:params:xml:ns:xmpp-stanzas",
+        ))
         .build();
     error.append_child(Element::builder(kind, "urn:xmpp:jingle:errors:1").build());
     Iq::Error {
@@ -1600,7 +1605,8 @@ async fn handle_stanza(
             if let Some(event) = msg.payloads.iter().find(|p| {
                 p.name() == "event" && p.ns() == "http://jabber.org/protocol/pubsub#event"
             }) {
-                if let Some(items) = event.get_child("items", "http://jabber.org/protocol/pubsub#event")
+                if let Some(items) =
+                    event.get_child("items", "http://jabber.org/protocol/pubsub#event")
                 {
                     if items
                         .attr("node")
@@ -1620,7 +1626,11 @@ async fn handle_stanza(
                                         .from
                                         .as_ref()
                                         .map(|j| j.to_bare().to_string())
-                                        .or_else(|| our_jid.map(|j| j.split('/').next().unwrap_or(j).to_string()))
+                                        .or_else(|| {
+                                            our_jid.map(|j| {
+                                                j.split('/').next().unwrap_or(j).to_string()
+                                            })
+                                        })
                                         .unwrap_or_default();
                                     tracing::info!(
                                         "[OMEMO] Live device list update for {}: {:?}",
@@ -1782,16 +1792,7 @@ async fn handle_stanza(
                     from,
                     msg.bodies.get("")
                 );
-                process_message(
-                    msg,
-                    output,
-                    omemo,
-                    Direction::Incoming,
-                    from,
-                    None,
-                    our_jid,
-                )
-                .await;
+                process_message(msg, output, omemo, Direction::Incoming, from, None, our_jid).await;
             }
         }
         Stanza::Presence(presence) => {
@@ -1825,10 +1826,7 @@ async fn handle_stanza(
         Stanza::Iq(iq) => {
             match iq {
                 Iq::Result {
-                    id,
-                    from,
-                    payload,
-                    ..
+                    id, from, payload, ..
                 } => {
                     if let Some(pending) = pending_iqs.remove(&id) {
                         match pending {
@@ -1849,10 +1847,17 @@ async fn handle_stanza(
                                 let Some((put_url, get_url, headers)) =
                                     parse_http_upload_slot(&element)
                                 else {
-                                    let _ = output.send(XmppEvent::StatusChanged("File send failed: could not parse upload slot".to_string())).await;
+                                    let _ = output
+                                        .send(XmppEvent::StatusChanged(
+                                            "File send failed: could not parse upload slot"
+                                                .to_string(),
+                                        ))
+                                        .await;
                                     return;
                                 };
-                                match upload_file_to_slot(&put_url, &path, &content_type, &headers).await {
+                                match upload_file_to_slot(&put_url, &path, &content_type, &headers)
+                                    .await
+                                {
                                     Ok(()) => {
                                         let file_body = format!("📎 {}\n{}", filename, get_url);
                                         let sent_msg = if let Some(mgr) = omemo
@@ -1860,7 +1865,10 @@ async fn handle_stanza(
                                         {
                                             match mgr.encrypt_message(&to, &file_body) {
                                                 Some(encrypted) => {
-                                                    tracing::info!("[SEND] OMEMO file encrypt ok for {}", to);
+                                                    tracing::info!(
+                                                        "[SEND] OMEMO file encrypt ok for {}",
+                                                        to
+                                                    );
                                                     build_omemo_xmpp_message(
                                                         &to,
                                                         &encrypted,
@@ -1869,7 +1877,10 @@ async fn handle_stanza(
                                                     )
                                                 }
                                                 None => {
-                                                    tracing::info!("[SEND] OMEMO file encrypt failed for {}; sending plaintext", to);
+                                                    tracing::info!(
+                                                        "[SEND] OMEMO file encrypt failed for {}; sending plaintext",
+                                                        to
+                                                    );
                                                     make_file_message(&to, &filename, &get_url)
                                                 }
                                             }
@@ -1888,10 +1899,17 @@ async fn handle_stanza(
                                                 _id: uuid::Uuid::new_v4().to_string(),
                                             })
                                             .await;
-                                        let _ = output.send(XmppEvent::StatusChanged("File sent".to_string())).await;
+                                        let _ = output
+                                            .send(XmppEvent::StatusChanged("File sent".to_string()))
+                                            .await;
                                     }
                                     Err(err) => {
-                                        let _ = output.send(XmppEvent::StatusChanged(format!("File send failed: {}", err))).await;
+                                        let _ = output
+                                            .send(XmppEvent::StatusChanged(format!(
+                                                "File send failed: {}",
+                                                err
+                                            )))
+                                            .await;
                                     }
                                 }
                             }
@@ -1925,7 +1943,10 @@ async fn handle_stanza(
                                                     tracing::info!(
                                                         "[OMEMO] Generic bundle response for {} has item id '{}' (device id 0); skipping, will use per-device fetch",
                                                         jid,
-                                                        item.id.as_ref().map(|id| id.0.as_str()).unwrap_or("(none)")
+                                                        item.id
+                                                            .as_ref()
+                                                            .map(|id| id.0.as_str())
+                                                            .unwrap_or("(none)")
                                                     );
                                                     continue;
                                                 }
@@ -2728,8 +2749,7 @@ async fn handle_stanza(
                                     tracing::info!("[BOOKMARKS] Empty private storage response");
                                     return;
                                 };
-                                if element.name() != "query"
-                                    || element.ns() != "jabber:iq:private"
+                                if element.name() != "query" || element.ns() != "jabber:iq:private"
                                 {
                                     tracing::info!(
                                         "[BOOKMARKS] Unexpected payload: name={} ns={}",
@@ -2752,9 +2772,8 @@ async fn handle_stanza(
                                         let Some(jid) = conf.attr("jid") else {
                                             continue;
                                         };
-                                        let name = conf
-                                            .attr("name")
-                                            .map(std::string::ToString::to_string);
+                                        let name =
+                                            conf.attr("name").map(std::string::ToString::to_string);
                                         let contact = Contact {
                                             jid: jid.to_string(),
                                             name,
@@ -2791,10 +2810,7 @@ async fn handle_stanza(
                                                 Some(room_jid),
                                                 Some(String::new()),
                                             );
-                                            tracing::info!(
-                                                "[MAM] Sending room query for {}",
-                                                jid
-                                            );
+                                            tracing::info!("[MAM] Sending room query for {}", jid);
                                             let _ = safe_send_stanza(
                                                 client,
                                                 room_mam_iq.into(),
@@ -2957,9 +2973,14 @@ async fn handle_stanza(
                                     .await;
                                 } else if id.starts_with("mam-room-query-") {
                                     let room_to = from.clone();
-                                    let room_queryid = id.replacen("mam-room-query-", "mam-room-", 1);
-                                    let next_iq =
-                                        build_mam_query_iq(id.clone(), room_queryid, room_to, Some(first));
+                                    let room_queryid =
+                                        id.replacen("mam-room-query-", "mam-room-", 1);
+                                    let next_iq = build_mam_query_iq(
+                                        id.clone(),
+                                        room_queryid,
+                                        room_to,
+                                        Some(first),
+                                    );
                                     tracing::info!(
                                         "[MAM] Paginating older room-history page for id={}",
                                         id
@@ -3039,7 +3060,9 @@ async fn handle_stanza(
                             .unwrap_or_default();
                         let from_jid = from.clone();
 
-                        let invalid = |kind: &str| build_iq_jingle_error_reply(from_jid.clone(), id.clone(), kind);
+                        let invalid = |kind: &str| {
+                            build_iq_jingle_error_reply(from_jid.clone(), id.clone(), kind)
+                        };
 
                         match action.as_str() {
                             "session-initiate" => {
@@ -3052,7 +3075,8 @@ async fn handle_stanza(
                                         invalid("tie-break").into(),
                                         "jingle-invalid",
                                         stream_healthy,
-                                    ).await;
+                                    )
+                                    .await;
                                     return;
                                 }
                                 jingle_sessions.insert(
@@ -3073,7 +3097,8 @@ async fn handle_stanza(
                                 match jingle_sessions.get_mut(&sid) {
                                     Some(sess)
                                         if sess.peer_bare == from_bare
-                                            && sess.state == JingleSessionState::PendingOutgoing =>
+                                            && sess.state
+                                                == JingleSessionState::PendingOutgoing =>
                                     {
                                         sess.state = JingleSessionState::Active;
                                     }
@@ -3083,7 +3108,8 @@ async fn handle_stanza(
                                             invalid("out-of-order").into(),
                                             "jingle-invalid",
                                             stream_healthy,
-                                        ).await;
+                                        )
+                                        .await;
                                         return;
                                     }
                                     None => {
@@ -3092,7 +3118,8 @@ async fn handle_stanza(
                                             invalid("unknown-session").into(),
                                             "jingle-invalid",
                                             stream_healthy,
-                                        ).await;
+                                        )
+                                        .await;
                                         return;
                                     }
                                 }
@@ -3119,7 +3146,8 @@ async fn handle_stanza(
                                             invalid("out-of-order").into(),
                                             "jingle-invalid",
                                             stream_healthy,
-                                        ).await;
+                                        )
+                                        .await;
                                         return;
                                     }
                                     None => {
@@ -3128,14 +3156,12 @@ async fn handle_stanza(
                                             invalid("unknown-session").into(),
                                             "jingle-invalid",
                                             stream_healthy,
-                                        ).await;
+                                        )
+                                        .await;
                                         return;
                                     }
                                 }
-                                if payload
-                                    .get_child("ringing", NS_JINGLE_RTP_INFO)
-                                    .is_some()
-                                {
+                                if payload.get_child("ringing", NS_JINGLE_RTP_INFO).is_some() {
                                     let _ = output
                                         .send(XmppEvent::CallRinging {
                                             with: from_bare,
@@ -3175,7 +3201,8 @@ async fn handle_stanza(
                                             invalid("out-of-order").into(),
                                             "jingle-invalid",
                                             stream_healthy,
-                                        ).await;
+                                        )
+                                        .await;
                                         return;
                                     }
                                     None => {
@@ -3184,7 +3211,8 @@ async fn handle_stanza(
                                             invalid("unknown-session").into(),
                                             "jingle-invalid",
                                             stream_healthy,
-                                        ).await;
+                                        )
+                                        .await;
                                         return;
                                     }
                                 }
@@ -3241,10 +3269,7 @@ async fn handle_stanza(
                         safe_send_stanza(client, result.into(), "iq-set-ack", stream_healthy).await;
                 }
                 Iq::Get {
-                    id,
-                    from,
-                    payload,
-                    ..
+                    id, from, payload, ..
                 } => {
                     let is_ping = payload.name() == "ping" && payload.ns() == NS_PING;
                     let result = Iq::Result {
@@ -3253,8 +3278,8 @@ async fn handle_stanza(
                         to: from,
                         payload: None,
                     };
-                    let _ =
-                        safe_send_stanza(client, result.into(), "iq-get-reply", stream_healthy).await;
+                    let _ = safe_send_stanza(client, result.into(), "iq-get-reply", stream_healthy)
+                        .await;
                     if is_ping {
                         tracing::info!("[PING] Replied to XEP-0199 ping");
                     }
@@ -3276,7 +3301,8 @@ async fn handle_stanza(
                             } => {
                                 let next_idx = service_idx + 1;
                                 if next_idx < services.len() {
-                                    let request_id = format!("upload-slot-{}", uuid::Uuid::new_v4());
+                                    let request_id =
+                                        format!("upload-slot-{}", uuid::Uuid::new_v4());
                                     if send_http_upload_slot_request(
                                         client,
                                         &request_id,
@@ -3304,7 +3330,11 @@ async fn handle_stanza(
                                         return;
                                     }
                                 }
-                                let _ = output.send(XmppEvent::StatusChanged("File send failed: upload service unavailable".to_string())).await;
+                                let _ = output
+                                    .send(XmppEvent::StatusChanged(
+                                        "File send failed: upload service unavailable".to_string(),
+                                    ))
+                                    .await;
                             }
                             PendingIq::VCardAvatar { jid } => {
                                 tracing::info!(
@@ -3680,12 +3710,11 @@ fn make_file_message(to: &str, filename: &str, url: &str) -> XmppMessage {
 
 fn make_correction_message(to: &str, body: &str, id: &str, replace_id: &str) -> XmppMessage {
     let mut message = make_message(to, body, id);
-    message
-        .payloads
-        .push(Element::builder("replace", NS_MESSAGE_CORRECT).attr(
-            "id".try_into().expect("valid attr"),
-            replace_id.to_string(),
-        ).build());
+    message.payloads.push(
+        Element::builder("replace", NS_MESSAGE_CORRECT)
+            .attr("id".try_into().expect("valid attr"), replace_id.to_string())
+            .build(),
+    );
     message
 }
 
@@ -3697,7 +3726,9 @@ fn make_chatstate_message(to: &str, state: ChatState) -> XmppMessage {
         ChatState::Active => "active",
         ChatState::Composing => "composing",
     };
-    message.payloads.push(Element::builder(name, NS_CHATSTATES).build());
+    message
+        .payloads
+        .push(Element::builder(name, NS_CHATSTATES).build());
     message
 }
 
@@ -3766,13 +3797,11 @@ async fn maybe_send_delivery_receipt(
 
     let mut receipt = XmppMessage::new(Some(from));
     receipt.type_ = MessageType::Chat;
-    receipt
-        .payloads
-        .push(
-            Element::builder("received", NS_RECEIPTS)
-                .attr("id".try_into().expect("valid attr"), stanza_id)
-                .build(),
-        );
+    receipt.payloads.push(
+        Element::builder("received", NS_RECEIPTS)
+            .attr("id".try_into().expect("valid attr"), stanza_id)
+            .build(),
+    );
     let _ = safe_send_stanza(client, receipt.into(), "message-receipt", stream_healthy).await;
 }
 
@@ -3803,7 +3832,11 @@ fn build_muc_join_presence(room_jid: &str, nick: &str) -> Option<XmppPresence> {
 }
 
 fn guess_content_type(path: &Path) -> String {
-    match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+    {
         Some(ext) => match ext.as_str() {
             "jpg" | "jpeg" => "image/jpeg".to_string(),
             "png" => "image/png".to_string(),
@@ -3838,11 +3871,11 @@ async fn send_http_upload_slot_request(
     let request = Element::builder("request", "urn:xmpp:http:upload:0")
         .attr("filename".try_into().expect("valid attr"), filename)
         .attr("size".try_into().expect("valid attr"), size.to_string())
-        .attr(
-            "content-type".try_into().expect("valid attr"),
-            content_type,
-        )
-        .append(Element::builder("message", "urn:xmpp:http:upload:purpose:0"))
+        .attr("content-type".try_into().expect("valid attr"), content_type)
+        .append(Element::builder(
+            "message",
+            "urn:xmpp:http:upload:purpose:0",
+        ))
         .build();
     let iq = Iq::Get {
         id: request_id.to_string(),
@@ -3865,7 +3898,8 @@ fn parse_http_upload_slot(payload: &Element) -> Option<HttpUploadSlot> {
     let get_url = get.attr("url")?.to_string();
     let mut headers = Vec::new();
     for child in put.children() {
-        if child.name() == "header" && child.ns() == "urn:xmpp:http:upload:0"
+        if child.name() == "header"
+            && child.ns() == "urn:xmpp:http:upload:0"
             && let Some(name) = child.attr("name")
         {
             headers.push((name.to_string(), child.text()));
@@ -3882,7 +3916,9 @@ async fn upload_file_to_slot(
 ) -> Result<(), String> {
     let data = std::fs::read(path).map_err(|e| format!("read failed: {}", e))?;
     let client = reqwest::Client::new();
-    let mut req = client.put(put_url).header(reqwest::header::CONTENT_TYPE, content_type);
+    let mut req = client
+        .put(put_url)
+        .header(reqwest::header::CONTENT_TYPE, content_type);
     for (name, value) in headers {
         let allowed = matches!(
             name.to_ascii_lowercase().as_str(),
@@ -4188,7 +4224,6 @@ fn build_avatar_data_fetch_iq(jid: &str, hash: &str) -> Iq {
     iq
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4262,7 +4297,10 @@ mod tests {
     #[test]
     fn build_carbons_enable_iq_structure() {
         let iq = build_carbons_enable_iq();
-        let Iq::Set { id, to, payload, .. } = iq else {
+        let Iq::Set {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Set IQ");
         };
         assert_eq!(id, "carbons-enable");
@@ -4274,7 +4312,10 @@ mod tests {
     #[test]
     fn build_bookmarks_fetch_iq_structure() {
         let iq = build_bookmarks_fetch_iq();
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert_eq!(id, "bookmarks-get");
@@ -4404,7 +4445,11 @@ mod tests {
         let payload = iq_set_payload(&iq);
         let content = payload.get_child("content", NS_JINGLE).unwrap();
         let transport = content.get_child("transport", NS_JINGLE_ICE).unwrap();
-        assert!(transport.get_child("end-of-candidates", NS_JINGLE_ICE).is_some());
+        assert!(
+            transport
+                .get_child("end-of-candidates", NS_JINGLE_ICE)
+                .is_some()
+        );
     }
 
     #[test]
@@ -4416,7 +4461,10 @@ mod tests {
                     .build(),
             )
             .build();
-        assert_eq!(parse_jingle_terminate_reason(&jingle), Some("success".to_string()));
+        assert_eq!(
+            parse_jingle_terminate_reason(&jingle),
+            Some("success".to_string())
+        );
     }
 
     #[test]
@@ -4429,7 +4477,10 @@ mod tests {
     fn build_iq_jingle_error_reply_out_of_order() {
         let to = Jid::from_str("peer@example.com").ok();
         let iq = build_iq_jingle_error_reply(to.clone(), "id1".to_string(), "out-of-order");
-        let Iq::Error { id, to: t, error, .. } = iq else {
+        let Iq::Error {
+            id, to: t, error, ..
+        } = iq
+        else {
             panic!("expected Error IQ");
         };
         assert_eq!(id, "id1");
@@ -4437,9 +4488,11 @@ mod tests {
         assert_eq!(error.defined_condition, DefinedCondition::UnexpectedRequest);
         let other = error.other.as_ref().unwrap();
         assert_eq!(other.name(), "error");
-        assert!(other
-            .get_child("out-of-order", "urn:xmpp:jingle:errors:1")
-            .is_some());
+        assert!(
+            other
+                .get_child("out-of-order", "urn:xmpp:jingle:errors:1")
+                .is_some()
+        );
     }
 
     #[test]
@@ -4451,9 +4504,11 @@ mod tests {
         assert_eq!(error.defined_condition, DefinedCondition::ItemNotFound);
         let other = error.other.as_ref().unwrap();
         assert_eq!(other.name(), "error");
-        assert!(other
-            .get_child("unknown-session", "urn:xmpp:jingle:errors:1")
-            .is_some());
+        assert!(
+            other
+                .get_child("unknown-session", "urn:xmpp:jingle:errors:1")
+                .is_some()
+        );
     }
 
     #[test]
@@ -4469,7 +4524,10 @@ mod tests {
     fn build_mam_query_iq_structure() {
         let to = Jid::from_str("archive@example.com").ok();
         let iq = build_mam_query_iq("mam-1", "q1", to.clone(), Some("before-id".to_string()));
-        let Iq::Set { id, to: t, payload, .. } = iq else {
+        let Iq::Set {
+            id, to: t, payload, ..
+        } = iq
+        else {
             panic!("expected Set IQ");
         };
         assert_eq!(id, "mam-1");
@@ -4496,7 +4554,11 @@ mod tests {
         let m = make_message("user@example.com", "hello", "mid");
         assert_eq!(m.type_, MessageType::Chat);
         assert_eq!(m.bodies.get(""), Some(&"hello".to_string()));
-        assert!(m.payloads.iter().any(|p| p.name() == "request" && p.ns() == NS_RECEIPTS));
+        assert!(
+            m.payloads
+                .iter()
+                .any(|p| p.name() == "request" && p.ns() == NS_RECEIPTS)
+        );
     }
 
     #[test]
@@ -4518,9 +4580,7 @@ mod tests {
     fn make_correction_message_includes_replace_payload() {
         let m = make_correction_message("user@example.com", "fixed", "mid", "old-mid");
         assert!(m.payloads.iter().any(|p| {
-            p.name() == "replace"
-                && p.ns() == NS_MESSAGE_CORRECT
-                && p.attr("id") == Some("old-mid")
+            p.name() == "replace" && p.ns() == NS_MESSAGE_CORRECT && p.attr("id") == Some("old-mid")
         }));
         assert_eq!(m.bodies.get(""), Some(&"fixed".to_string()));
     }
@@ -4528,13 +4588,20 @@ mod tests {
     #[test]
     fn make_chatstate_message_active_and_composing() {
         let active = make_chatstate_message("user@example.com", ChatState::Active);
-        assert!(active.payloads.iter().any(|p| p.name() == "active" && p.ns() == NS_CHATSTATES));
+        assert!(
+            active
+                .payloads
+                .iter()
+                .any(|p| p.name() == "active" && p.ns() == NS_CHATSTATES)
+        );
 
         let composing = make_chatstate_message("user@example.com", ChatState::Composing);
-        assert!(composing
-            .payloads
-            .iter()
-            .any(|p| p.name() == "composing" && p.ns() == NS_CHATSTATES));
+        assert!(
+            composing
+                .payloads
+                .iter()
+                .any(|p| p.name() == "composing" && p.ns() == NS_CHATSTATES)
+        );
     }
 
     #[test]
@@ -4545,7 +4612,10 @@ mod tests {
                 .attr("id".try_into().expect("valid attr"), "receipt-id")
                 .build(),
         );
-        assert_eq!(extract_received_receipt_id(&m), Some("receipt-id".to_string()));
+        assert_eq!(
+            extract_received_receipt_id(&m),
+            Some("receipt-id".to_string())
+        );
     }
 
     #[test]
@@ -4568,7 +4638,8 @@ mod tests {
             ("unknown", None),
         ] {
             let mut m = XmppMessage::new(None);
-            m.payloads.push(Element::builder(name, NS_CHATSTATES).build());
+            m.payloads
+                .push(Element::builder(name, NS_CHATSTATES).build());
             assert_eq!(extract_chat_state(&m), expected);
         }
     }
@@ -4590,18 +4661,29 @@ mod tests {
     #[test]
     fn build_muc_join_presence_structure() {
         let p = build_muc_join_presence("room@conference.example.com", "nick").unwrap();
-        assert_eq!(p.to.as_ref().unwrap().to_string(), "room@conference.example.com/nick");
-        assert!(p.payloads.iter().any(|pl| {
-            pl.name() == "x" && pl.ns() == "http://jabber.org/protocol/muc"
-        }));
+        assert_eq!(
+            p.to.as_ref().unwrap().to_string(),
+            "room@conference.example.com/nick"
+        );
+        assert!(
+            p.payloads
+                .iter()
+                .any(|pl| { pl.name() == "x" && pl.ns() == "http://jabber.org/protocol/muc" })
+        );
     }
 
     #[test]
     fn guess_content_type_known_and_default() {
         assert_eq!(guess_content_type(Path::new("image.PNG")), "image/png");
         assert_eq!(guess_content_type(Path::new("doc.pdf")), "application/pdf");
-        assert_eq!(guess_content_type(Path::new("unknown.xyz")), "application/octet-stream");
-        assert_eq!(guess_content_type(Path::new("no_extension")), "application/octet-stream");
+        assert_eq!(
+            guess_content_type(Path::new("unknown.xyz")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            guess_content_type(Path::new("no_extension")),
+            "application/octet-stream"
+        );
     }
 
     #[test]
@@ -4615,7 +4697,10 @@ mod tests {
         let slot = Element::builder("slot", "urn:xmpp:http:upload:0")
             .append(
                 Element::builder("put", "urn:xmpp:http:upload:0")
-                    .attr("url".try_into().expect("valid attr"), "https://put.example.com/x")
+                    .attr(
+                        "url".try_into().expect("valid attr"),
+                        "https://put.example.com/x",
+                    )
                     .append(
                         Element::builder("header", "urn:xmpp:http:upload:0")
                             .attr("name".try_into().expect("valid attr"), "Authorization")
@@ -4626,21 +4711,30 @@ mod tests {
             )
             .append(
                 Element::builder("get", "urn:xmpp:http:upload:0")
-                    .attr("url".try_into().expect("valid attr"), "https://get.example.com/x")
+                    .attr(
+                        "url".try_into().expect("valid attr"),
+                        "https://get.example.com/x",
+                    )
                     .build(),
             )
             .build();
         let (put, get, headers) = parse_http_upload_slot(&slot).unwrap();
         assert_eq!(put, "https://put.example.com/x");
         assert_eq!(get, "https://get.example.com/x");
-        assert_eq!(headers, vec![("Authorization".to_string(), "Bearer token".to_string())]);
+        assert_eq!(
+            headers,
+            vec![("Authorization".to_string(), "Bearer token".to_string())]
+        );
     }
 
     #[test]
     fn build_device_list_iq_is_pubsub_publish() {
         let to = Jid::from_str("user@example.com").unwrap();
         let iq = build_device_list_iq(&[1, 2, 3], &to);
-        let Iq::Set { id, to: t, payload, .. } = iq else {
+        let Iq::Set {
+            id, to: t, payload, ..
+        } = iq
+        else {
             panic!("expected Set IQ");
         };
         assert!(id.starts_with("pub-devices-"));
@@ -4663,7 +4757,10 @@ mod tests {
     #[test]
     fn build_device_list_fetch_iq_targets_jid() {
         let iq = build_device_list_fetch_iq("user@example.com", OmemoVersion::V0);
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert!(id.contains("V0"));
@@ -4674,7 +4771,10 @@ mod tests {
     #[test]
     fn build_bundle_fetch_iq_targets_jid() {
         let iq = build_bundle_fetch_iq("user@example.com", OmemoVersion::V0);
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert!(id.contains("V0"));
@@ -4685,19 +4785,27 @@ mod tests {
     #[test]
     fn build_bundle_fetch_iq_v0_includes_device_id() {
         let iq = build_bundle_fetch_iq_v0("user@example.com", 42);
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert!(id.contains("42"));
         assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
-        let items = payload.get_child("items", "http://jabber.org/protocol/pubsub").unwrap();
+        let items = payload
+            .get_child("items", "http://jabber.org/protocol/pubsub")
+            .unwrap();
         assert!(items.attr("node").unwrap().contains("42"));
     }
 
     #[test]
     fn build_vcard_fetch_iq_targets_jid() {
         let iq = build_vcard_fetch_iq("user@example.com");
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert_eq!(id, "vcard-user@example.com");
@@ -4708,24 +4816,34 @@ mod tests {
     #[test]
     fn build_avatar_metadata_fetch_iq_targets_jid() {
         let iq = build_avatar_metadata_fetch_iq("user@example.com");
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert_eq!(id, "avatar-meta-user@example.com");
         assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
-        let items = payload.get_child("items", "http://jabber.org/protocol/pubsub").unwrap();
+        let items = payload
+            .get_child("items", "http://jabber.org/protocol/pubsub")
+            .unwrap();
         assert_eq!(items.attr("node"), Some("urn:xmpp:avatar:metadata"));
     }
 
     #[test]
     fn build_avatar_data_fetch_iq_uses_hash_prefix() {
         let iq = build_avatar_data_fetch_iq("user@example.com", "abcdef1234567890");
-        let Iq::Get { id, to, payload, .. } = iq else {
+        let Iq::Get {
+            id, to, payload, ..
+        } = iq
+        else {
             panic!("expected Get IQ");
         };
         assert_eq!(id, "fetch-avatar-data-abcdef12");
         assert_eq!(to.as_ref().unwrap().to_string(), "user@example.com");
-        let items = payload.get_child("items", "http://jabber.org/protocol/pubsub").unwrap();
+        let items = payload
+            .get_child("items", "http://jabber.org/protocol/pubsub")
+            .unwrap();
         assert_eq!(items.attr("node"), Some("urn:xmpp:avatar:data"));
     }
 }

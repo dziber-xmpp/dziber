@@ -9,11 +9,11 @@ use crate::db::models::{
 use crate::db::schema::{
     omemo_account, omemo_bundle_cache, omemo_devices, omemo_key, omemo_sessions, omemo_trust,
 };
-use dziber_omemo::OmemoStore;
-use dziber_omemo::account::OmemoAccount;
-use dziber_omemo::manager::CachedBundle;
-use dziber_omemo::signal_ratchet;
-use dziber_omemo::trust::{TrustStatus, TrustStore};
+use crate::omemo::OmemoStore;
+use crate::omemo::account::OmemoAccount;
+use crate::omemo::manager::CachedBundle;
+use crate::omemo::signal_ratchet;
+use crate::omemo::trust::{TrustStatus, TrustStore};
 
 pub fn save_omemo_account(
     account: &OmemoAccount,
@@ -212,10 +212,12 @@ pub fn load_omemo_bundle_cache()
     let mut cache: HashMap<String, HashMap<u32, CachedBundle>> = HashMap::new();
     for row in results {
         if let Ok(ik_bytes) = <&[u8] as TryInto<[u8; 32]>>::try_into(row.identity_key.as_slice()) {
-            cache
-                .entry(row.jid)
-                .or_default()
-                .insert(row.device_id as u32, CachedBundle { identity_key: ik_bytes });
+            cache.entry(row.jid).or_default().insert(
+                row.device_id as u32,
+                CachedBundle {
+                    identity_key: ik_bytes,
+                },
+            );
         }
     }
     Ok(cache)
@@ -227,9 +229,9 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::db::test_helpers::{connection, with_test_db};
-    use dziber_omemo::account::OmemoAccount;
-    use dziber_omemo::signal_ratchet;
-    use dziber_omemo::trust::{TrustStatus, TrustStore};
+    use crate::omemo::account::OmemoAccount;
+    use crate::omemo::signal_ratchet;
+    use crate::omemo::trust::{TrustStatus, TrustStore};
 
     fn sample_key() -> [u8; 32] {
         [0xAB; 32]
@@ -323,7 +325,9 @@ mod tests {
         let original = OmemoAccount::generate(12345);
         super::save_omemo_account(&original, &key).unwrap();
 
-        let loaded = super::load_omemo_account(&key).unwrap().expect("account missing");
+        let loaded = super::load_omemo_account(&key)
+            .unwrap()
+            .expect("account missing");
         assert_eq!(loaded.device_id, 12345);
         assert_eq!(
             loaded.inner.curve25519_key().to_bytes(),
@@ -340,8 +344,7 @@ mod tests {
         let mut rng = thread_rng();
         let alice_identity = signal_ratchet::IdentityKeyPair::generate(&mut rng);
         let bob_identity = signal_ratchet::IdentityKeyPair::generate(&mut rng);
-        let bob_signed_pre_key =
-            signal_ratchet::SignedPreKey::generate(1, &bob_identity, &mut rng);
+        let bob_signed_pre_key = signal_ratchet::SignedPreKey::generate(1, &bob_identity, &mut rng);
         let bob_one_time_pre_key = signal_ratchet::PreKey::generate(7, &mut rng);
         let bundle = signal_ratchet::PreKeyBundle {
             registration_id: 1234,
@@ -356,8 +359,7 @@ mod tests {
         let session =
             signal_ratchet::Session::new_alice(&alice_identity, &bundle, &mut rng).unwrap();
 
-        let mut sessions: HashMap<String, HashMap<u32, signal_ratchet::Session>> =
-            HashMap::new();
+        let mut sessions: HashMap<String, HashMap<u32, signal_ratchet::Session>> = HashMap::new();
         sessions
             .entry("bob@example.com".to_string())
             .or_default()
@@ -415,9 +417,7 @@ impl OmemoStore for DziberOmemoStore {
         save_omemo_legacy_sessions(sessions, key)
     }
 
-    fn load_device_lists(
-        &self,
-    ) -> Result<HashMap<String, Vec<u32>>, Box<dyn std::error::Error>> {
+    fn load_device_lists(&self) -> Result<HashMap<String, Vec<u32>>, Box<dyn std::error::Error>> {
         load_omemo_device_lists()
     }
 
@@ -445,10 +445,7 @@ impl OmemoStore for DziberOmemoStore {
         load_omemo_trust_store()
     }
 
-    fn save_trust_store(
-        &self,
-        store: &TrustStore,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn save_trust_store(&self, store: &TrustStore) -> Result<(), Box<dyn std::error::Error>> {
         save_omemo_trust_store(store)
     }
 }

@@ -3,10 +3,10 @@ use aes_gcm::{
     Aes128Gcm, Key as AesGcmKey, Nonce as AesGcmNonce,
     aead::{Aead, KeyInit},
 };
-use cbc::cipher::block_padding::Pkcs7;
-use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 #[cfg(test)]
 use cbc::cipher::BlockEncryptMut;
+use cbc::cipher::block_padding::Pkcs7;
+use cbc::cipher::{BlockDecryptMut, KeyIvInit};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;

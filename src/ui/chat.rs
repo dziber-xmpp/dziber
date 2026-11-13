@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
+use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, Space, button, column, container, row, scrollable, text, text_editor, text_input,
 };
 use iced::{Alignment, Background, Color, Element, Length, Padding, Theme};
-use iced::widget::text::Wrapping;
 
 use crate::models::conversation::Conversation;
 use crate::models::message::{Direction, MessageStatus};
@@ -62,9 +62,13 @@ pub fn view<'a>(
 
     let in_call = active_call_with.is_some_and(|jid| jid == conv.contact_jid);
     let call_button = if in_call {
-        button("Hang Up").on_press(Message::EndCallClicked).padding(8)
+        button("Hang Up")
+            .on_press(Message::EndCallClicked)
+            .padding(8)
     } else {
-        button("Call").on_press(Message::StartCallClicked).padding(8)
+        button("Call")
+            .on_press(Message::StartCallClicked)
+            .padding(8)
     };
 
     let header = container(

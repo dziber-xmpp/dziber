@@ -51,8 +51,10 @@ mod tests {
 
     #[test]
     fn conversation_new() {
-        let conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         assert_eq!(conversation.contact_jid, "contact@example.com");
         assert_eq!(conversation.account_jid, "me@example.com");
         assert_eq!(conversation.name, None);
@@ -63,23 +65,29 @@ mod tests {
 
     #[test]
     fn conversation_display_name_uses_name() {
-        let mut conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let mut conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         conversation.name = Some("Alice".to_string());
         assert_eq!(conversation.display_name(), "Alice");
     }
 
     #[test]
     fn conversation_display_name_fallback_to_jid() {
-        let conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         assert_eq!(conversation.display_name(), "contact@example.com");
     }
 
     #[test]
     fn conversation_last_message_and_add_message() {
-        let mut conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let mut conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         assert!(conversation.last_message().is_none());
 
         let message = Message::new(
@@ -94,8 +102,10 @@ mod tests {
 
     #[test]
     fn conversation_add_outgoing_message_does_not_increment_unread() {
-        let mut conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let mut conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         let message = Message::new(
             "me@example.com".to_string(),
             "Hi".to_string(),
@@ -108,8 +118,10 @@ mod tests {
 
     #[test]
     fn conversation_mark_read() {
-        let mut conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let mut conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         let message = Message::new(
             "contact@example.com".to_string(),
             "Hello".to_string(),
@@ -123,8 +135,10 @@ mod tests {
 
     #[test]
     fn conversation_serde_roundtrip() {
-        let mut conversation =
-            Conversation::new("contact@example.com".to_string(), "me@example.com".to_string());
+        let mut conversation = Conversation::new(
+            "contact@example.com".to_string(),
+            "me@example.com".to_string(),
+        );
         conversation.name = Some("Alice".to_string());
         conversation.add_message(Message::new(
             "contact@example.com".to_string(),

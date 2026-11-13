@@ -3,50 +3,104 @@ name = "dziber"
 version = "0.0.1"
 edition = "2024"
 
-[workspace]
-members = [".", "omemo"]
-resolver = "2"
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "dziber"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = [
+  "mail", "omemo", "dep:async-trait", "dep:calcard", "dep:diesel",
+  "dep:diesel_migrations", "dep:dirs", "dep:iced", "dep:image", "dep:keyring",
+  "dep:ksni", "dep:libnotify", "dep:libsqlite3-sys", "dep:mail-builder",
+  "dep:maolan-engine", "dep:qrcodegen", "dep:rfd", "dep:roxmltree",
+  "dep:tokio-xmpp", "dep:tracing-appender", "dep:tracing-subscriber", "dep:xmpp-parsers",
+]
+mail = [
+  "dep:async-imap", "dep:base64", "dep:futures", "dep:lettre", "dep:mail-parser",
+  "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:webpki-roots", "dep:percent-encoding",
+]
+calendar = ["mail", "dep:roxmltree"]
+omemo = [
+  "dep:aes", "dep:aes-gcm", "dep:base64", "dep:cbc", "dep:hex", "dep:hkdf",
+  "dep:hmac", "dep:minidom", "dep:rand", "dep:rand_core", "dep:sha2", "dep:subtle",
+  "dep:thiserror", "dep:vodozemac", "dep:x25519-dalek", "dep:xeddsa", "dep:zeroize",
+]
+web = [
+  "omemo", "dep:futures", "dep:getrandom", "dep:gloo-net", "dep:gloo-timers",
+  "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:percent-encoding",
+]
 
 [dependencies]
-dziber-omemo = { path = "omemo" }
-iced = { version = "0.14.0", features = ["tokio", "image"] }
-tokio-xmpp = { version = "5.0.0", default-features = false, features = ["starttls", "ring", "rustls-native-certs"] }
-xmpp-parsers = "0.22.0"
-tokio = { version = "1.44", features = ["sync", "net", "rt", "time"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-dirs = "6.0"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.16", features = ["v4", "serde"] }
-futures = "0.3.32"
-diesel = { version = "2.2", features = ["sqlite", "chrono"] }
-diesel_migrations = { version = "2.2", features = ["sqlite"] }
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
-aes-gcm = "0.10"
-sha2 = "0.10"
-base64 = "0.22"
-rand = "0.8"
-async-trait = "0.1"
-qrcodegen = "1.8"
-ksni = "0.3"
-image = "0.25"
-libnotify = "1.0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+percent-encoding = { version = "2.3", optional = true }
 tracing = "0.1"
-tracing-subscriber = "0.3"
-tracing-appender = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-rfd = "0.15"
-maolan-engine = "0.1"
-calcard = "0.3.4"
-roxmltree = "0.20"
-percent-encoding = "2.3"
-async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
-lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls", "smtp-transport", "builder", "ring", "webpki-roots"] }
-mail-parser = "0.10"
-mail-builder = "0.4"
-tokio-rustls = "0.26"
-webpki-roots = "0.26"
-keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+uuid = { version = "1.16", features = ["v4", "serde", "js"] }
+
+aes = { version = "0.8", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+async-imap = { version = "0.10", optional = true, default-features = false, features = ["runtime-tokio"] }
+async-trait = { version = "0.1", optional = true }
+base64 = { version = "0.22", optional = true }
+calcard = { version = "0.3.4", optional = true }
+cbc = { version = "0.1", optional = true }
+diesel = { version = "2.2", optional = true, features = ["sqlite", "chrono"] }
+diesel_migrations = { version = "2.2", optional = true, features = ["sqlite"] }
+dirs = { version = "6.0", optional = true }
+futures = { version = "0.3.32", optional = true }
+getrandom = { version = "0.2", optional = true, features = ["js"] }
+gloo-net = { version = "0.6", optional = true, features = ["websocket"] }
+gloo-timers = { version = "0.3", optional = true, features = ["futures"] }
+hex = { version = "0.4", optional = true }
+hkdf = { version = "0.12", optional = true }
+hmac = { version = "0.12", optional = true }
+iced = { version = "0.14.0", optional = true, features = ["tokio", "image"] }
+image = { version = "0.25", optional = true }
+js-sys = { version = "0.3", optional = true }
+keyring = { version = "3", optional = true, default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+ksni = { version = "0.3", optional = true }
+lettre = { version = "0.11", optional = true, default-features = false, features = ["tokio1-rustls", "smtp-transport", "builder", "ring", "webpki-roots"] }
+libnotify = { version = "1.0.3", optional = true }
+libsqlite3-sys = { version = "0.30", optional = true, features = ["bundled"] }
+mail-builder = { version = "0.4", optional = true }
+mail-parser = { version = "0.10", optional = true }
+maolan-engine = { version = "0.4.22", optional = true, features = ["audio"] }
+minidom = { version = "0.18", optional = true }
+qrcodegen = { version = "1.8", optional = true }
+rand = { version = "0.8", optional = true }
+rand_core = { version = "0.6", optional = true, features = ["getrandom"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls", "json"] }
+rfd = { version = "0.15", optional = true }
+roxmltree = { version = "0.20", optional = true }
+sha2 = { version = "0.10", optional = true }
+subtle = { version = "2.6", optional = true }
+thiserror = { version = "2.0", optional = true }
+tokio = { version = "1.44", optional = true, features = ["sync", "net", "rt", "time", "io-util"] }
+tokio-rustls = { version = "0.26", optional = true }
+tokio-xmpp = { version = "5.0.0", optional = true, default-features = false, features = ["starttls", "ring", "rustls-native-certs"] }
+tracing-appender = { version = "0.2", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+vodozemac = { version = "0.10", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+  "Document", "Element", "Event", "EventTarget", "console", "HtmlAudioElement", "HtmlButtonElement", "KeyboardEvent",
+  "HtmlElement", "HtmlFormElement", "HtmlInputElement", "HtmlTextAreaElement", "HtmlMediaElement",
+  "MediaDevices", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "Navigator", "Node", "Notification", "NotificationPermission",
+  "RtcConfiguration", "RtcIceCandidate", "RtcIceCandidateInit", "RtcIceServer", "RtcPeerConnectionIceEvent",
+  "RtcPeerConnection", "RtcSessionDescription", "RtcSessionDescriptionInit", "RtcSdpType", "RtcTrackEvent", "Window",
+] }
+webpki-roots = { version = "0.26", optional = true }
+x25519-dalek = { version = "2.0", optional = true }
+xeddsa = { version = "~1.0", optional = true }
+xmpp-parsers = { version = "0.22.0", optional = true }
+zeroize = { version = "1.8", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -54,4 +108,3 @@ tempfile = "3"
 [profile.release]
 opt-level = 3
 lto = true
-

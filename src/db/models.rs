@@ -343,7 +343,8 @@ mod tests {
         for status in &statuses {
             for direction in &directions {
                 let original = sample_message(status.clone(), direction.clone());
-                let db = DbMessage::from_message(&original, "acc@example.com", "contact@example.com");
+                let db =
+                    DbMessage::from_message(&original, "acc@example.com", "contact@example.com");
 
                 assert_eq!(db.id, original.id);
                 assert_eq!(db.account_jid, "acc@example.com");

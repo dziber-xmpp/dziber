@@ -4,7 +4,7 @@ use iced::widget::{
 };
 use iced::{Element, Length};
 
-use crate::models::mail::{Email, Mailbox, MailFilter};
+use crate::models::mail::{Email, MailFilter, Mailbox};
 use crate::ui::app::Message;
 
 #[derive(Debug, Clone)]
@@ -97,9 +97,7 @@ fn filter_view(state: &MailState) -> Element<'_, Message> {
 fn mailbox_list(state: &MailState) -> Element<'_, Message> {
     let mut col = Column::new().spacing(4).padding(8);
 
-    col = col.push(
-        Button::new("Filters").on_press(MailMessage::FiltersClicked.into_message()),
-    );
+    col = col.push(Button::new("Filters").on_press(MailMessage::FiltersClicked.into_message()));
 
     for mb in &state.mailboxes {
         let selected = state.selected_mailbox.as_deref() == Some(mb.id.as_str());
@@ -168,10 +166,7 @@ fn email_detail_view(state: &MailState) -> Element<'_, Message> {
     }
 
     let mut col = Column::new().spacing(8).padding(8);
-    col = col.push(
-        Button::new("Compose")
-            .on_press(MailMessage::ComposeClicked.into_message()),
-    );
+    col = col.push(Button::new("Compose").on_press(MailMessage::ComposeClicked.into_message()));
 
     if let Some(email) = &state.selected_email {
         let from = email
@@ -185,8 +180,15 @@ fn email_detail_view(state: &MailState) -> Element<'_, Message> {
             .push(text(format!("Subject: {}", email.subject)).size(14))
             .push(
                 row![
-                    Button::new(if email.is_read() { "Mark unread" } else { "Mark read" })
-                        .on_press(MailMessage::MarkReadClicked(email.id.clone(), !email.is_read()).into_message()),
+                    Button::new(if email.is_read() {
+                        "Mark unread"
+                    } else {
+                        "Mark read"
+                    })
+                    .on_press(
+                        MailMessage::MarkReadClicked(email.id.clone(), !email.is_read())
+                            .into_message()
+                    ),
                     Button::new("Delete")
                         .on_press(MailMessage::DeleteClicked(email.id.clone()).into_message()),
                 ]
@@ -209,10 +211,8 @@ fn email_detail_view(state: &MailState) -> Element<'_, Message> {
 fn compose_view(state: &MailState) -> Element<'_, Message> {
     column![
         text("Compose Email").size(16),
-        text_input("To", &state.compose_to)
-            .on_input(|v| MailMessage::ToChanged(v).into_message()),
-        text_input("Cc", &state.compose_cc)
-            .on_input(|v| MailMessage::CcChanged(v).into_message()),
+        text_input("To", &state.compose_to).on_input(|v| MailMessage::ToChanged(v).into_message()),
+        text_input("Cc", &state.compose_cc).on_input(|v| MailMessage::CcChanged(v).into_message()),
         text_input("Subject", &state.compose_subject)
             .on_input(|v| MailMessage::SubjectChanged(v).into_message()),
         text_input("Body", &state.compose_body)
@@ -231,12 +231,9 @@ fn compose_view(state: &MailState) -> Element<'_, Message> {
 fn filter_list(state: &MailState) -> Element<'_, Message> {
     let mut col = Column::new().spacing(4).padding(8);
 
-    col = col.push(
-        Button::new("Back to mail").on_press(MailMessage::MailboxViewClicked.into_message()),
-    );
-    col = col.push(
-        Button::new("New filter").on_press(MailMessage::NewFilter.into_message()),
-    );
+    col = col
+        .push(Button::new("Back to mail").on_press(MailMessage::MailboxViewClicked.into_message()));
+    col = col.push(Button::new("New filter").on_press(MailMessage::NewFilter.into_message()));
 
     for filter in &state.filters {
         let selected = state
@@ -300,10 +297,7 @@ fn filter_detail_view(state: &MailState) -> Element<'_, Message> {
                     .label("Active")
                     .on_toggle(|_| MailMessage::ActivateFilter.into_message()),
             )
-            .push(
-                scrollable(text(&filter.content).size(12))
-                    .height(Length::Fixed(300.0)),
-            )
+            .push(scrollable(text(&filter.content).size(12)).height(Length::Fixed(300.0)))
             .push(
                 row![
                     Button::new("Edit").on_press(MailMessage::NewFilter.into_message()),

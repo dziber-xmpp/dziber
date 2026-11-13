@@ -276,10 +276,7 @@ mod tests {
         assert_eq!(fb_id, fallback[0].0);
         let public_from_secret =
             Curve25519PublicKey::from(&Curve25519SecretKey::from_slice(&fb_secret));
-        assert_eq!(
-            public_from_secret.to_bytes(),
-            fallback[0].1.to_bytes()
-        );
+        assert_eq!(public_from_secret.to_bytes(), fallback[0].1.to_bytes());
     }
 
     #[test]
@@ -290,15 +287,13 @@ mod tests {
 
         let public_by_id: std::collections::HashMap<u32, Curve25519PublicKey> =
             public.into_iter().collect();
-        let secret_by_id: std::collections::HashMap<u32, [u8; 32]> =
-            secret.into_iter().collect();
+        let secret_by_id: std::collections::HashMap<u32, [u8; 32]> = secret.into_iter().collect();
 
         assert_eq!(public_by_id.len(), 100);
         assert_eq!(secret_by_id.len(), 100);
 
         for (id, sec) in &secret_by_id {
-            let expected =
-                Curve25519PublicKey::from(&Curve25519SecretKey::from_slice(sec));
+            let expected = Curve25519PublicKey::from(&Curve25519SecretKey::from_slice(sec));
             let actual = public_by_id.get(id).unwrap();
             assert_eq!(
                 expected.to_bytes(),

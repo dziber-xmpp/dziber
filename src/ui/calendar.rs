@@ -1,4 +1,6 @@
-use iced::widget::{Button, Column, button, checkbox, column, container, row, scrollable, text, text_input};
+use iced::widget::{
+    Button, Column, button, checkbox, column, container, row, scrollable, text, text_input,
+};
 use iced::{Element, Length};
 
 use crate::models::calendar::Calendar;
@@ -181,8 +183,7 @@ fn detail_view(state: &CalendarState) -> Element<'_, Message> {
             .push(
                 row![
                     Button::new("Edit").on_press(CalendarMessage::NewEvent.into_message()),
-                    Button::new("Delete")
-                        .on_press(CalendarMessage::DeleteEvent.into_message()),
+                    Button::new("Delete").on_press(CalendarMessage::DeleteEvent.into_message()),
                 ]
                 .spacing(8),
             );
@@ -194,8 +195,7 @@ fn detail_view(state: &CalendarState) -> Element<'_, Message> {
             .push(
                 row![
                     Button::new("Edit").on_press(CalendarMessage::NewTask.into_message()),
-                    Button::new("Delete")
-                        .on_press(CalendarMessage::DeleteTask.into_message()),
+                    Button::new("Delete").on_press(CalendarMessage::DeleteTask.into_message()),
                 ]
                 .spacing(8),
             );

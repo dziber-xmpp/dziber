@@ -1,7 +1,7 @@
 //! Minimal protobuf encoder/decoder for the libsignal v3 messages used by
 //! legacy OMEMO (v0).
 
-use crate::signal_ratchet::Error;
+use super::super::signal_ratchet::Error;
 
 const WIRE_TYPE_VARINT: u8 = 0;
 const WIRE_TYPE_LEN_DELIM: u8 = 2;
@@ -93,7 +93,11 @@ impl SignalMessage {
                     if pos + len > buf.len() || !(len == 32 || len == 33) {
                         return Err(Error::Proto("invalid ratchetKey length".into()));
                     }
-                    let start = if len == 33 && buf[pos] == 0x05 { pos + 1 } else { pos };
+                    let start = if len == 33 && buf[pos] == 0x05 {
+                        pos + 1
+                    } else {
+                        pos
+                    };
                     let mut key = [0u8; 32];
                     key.copy_from_slice(&buf[start..start + 32]);
                     pos += len;
@@ -113,7 +117,11 @@ impl SignalMessage {
                     ciphertext = Some(buf[pos..pos + len].to_vec());
                     pos += len;
                 }
-                _ => return Err(Error::Proto(format!("unexpected field {field} wire {wire}"))),
+                _ => {
+                    return Err(Error::Proto(format!(
+                        "unexpected field {field} wire {wire}"
+                    )));
+                }
             }
         }
 
@@ -179,7 +187,11 @@ impl PreKeySignalMessage {
                     if pos + len > buf.len() || !(len == 32 || len == 33) {
                         return Err(Error::Proto("invalid baseKey length".into()));
                     }
-                    let start = if len == 33 && buf[pos] == 0x05 { pos + 1 } else { pos };
+                    let start = if len == 33 && buf[pos] == 0x05 {
+                        pos + 1
+                    } else {
+                        pos
+                    };
                     let mut key = [0u8; 32];
                     key.copy_from_slice(&buf[start..start + 32]);
                     pos += len;
@@ -190,7 +202,11 @@ impl PreKeySignalMessage {
                     if pos + len > buf.len() || !(len == 32 || len == 33) {
                         return Err(Error::Proto("invalid identityKey length".into()));
                     }
-                    let start = if len == 33 && buf[pos] == 0x05 { pos + 1 } else { pos };
+                    let start = if len == 33 && buf[pos] == 0x05 {
+                        pos + 1
+                    } else {
+                        pos
+                    };
                     let mut key = [0u8; 32];
                     key.copy_from_slice(&buf[start..start + 32]);
                     pos += len;
@@ -210,14 +226,20 @@ impl PreKeySignalMessage {
                 (6, WIRE_TYPE_VARINT) => {
                     signed_pre_key_id = Some(decode_varint(buf, &mut pos)?);
                 }
-                _ => return Err(Error::Proto(format!("unexpected field {field} wire {wire}"))),
+                _ => {
+                    return Err(Error::Proto(format!(
+                        "unexpected field {field} wire {wire}"
+                    )));
+                }
             }
         }
 
         Ok(PreKeySignalMessage {
-            registration_id: registration_id.ok_or_else(|| Error::Proto("missing registrationId".into()))?,
+            registration_id: registration_id
+                .ok_or_else(|| Error::Proto("missing registrationId".into()))?,
             pre_key_id: pre_key_id.ok_or_else(|| Error::Proto("missing preKeyId".into()))?,
-            signed_pre_key_id: signed_pre_key_id.ok_or_else(|| Error::Proto("missing signedPreKeyId".into()))?,
+            signed_pre_key_id: signed_pre_key_id
+                .ok_or_else(|| Error::Proto("missing signedPreKeyId".into()))?,
             base_key: base_key.ok_or_else(|| Error::Proto("missing baseKey".into()))?,
             identity_key: identity_key.ok_or_else(|| Error::Proto("missing identityKey".into()))?,
             message: message.ok_or_else(|| Error::Proto("missing message".into()))?,

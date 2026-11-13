@@ -122,6 +122,13 @@ impl AudioEngine {
                         period_frames: 480,
                         nperiods: 2,
                         sync_mode: false,
+                        io_latency_calibration: None,
+                        actual_period_frames: 0,
+                        input_channels: 0,
+                        output_channels: 0,
+                        bytes_per_frame: 0,
+                        ring_buffer_multiplier: 0,
+                        auto_open_midi_devices: false,
                     }))
                     .await;
             });
@@ -162,11 +169,11 @@ impl AudioEngine {
             let local_bind = "0.0.0.0:0"
                 .parse()
                 .expect("static local bind addr is valid");
-            let mut session = match MediaSession::start(local_bind, remote_addr, sid.as_bytes()).await
-            {
-                Ok(s) => s,
-                Err(_) => return,
-            };
+            let mut session =
+                match MediaSession::start(local_bind, remote_addr, sid.as_bytes()).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
 
             loop {
                 tokio::select! {
@@ -187,7 +194,6 @@ impl AudioEngine {
         self.media_task = Some(task);
     }
 }
-
 
 #[cfg(test)]
 mod tests {

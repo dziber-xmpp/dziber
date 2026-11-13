@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::account::OmemoAccount;
-use crate::bundle::Bundle;
-use crate::crypto;
-use crate::message::{EncryptedMessage, KeysGroup, MessageHeader, MessageKey};
-use crate::signal_ratchet;
-use crate::store::OmemoStore;
-use crate::trust::TrustStore;
+use super::account::OmemoAccount;
+use super::bundle::Bundle;
+use super::crypto;
+use super::message::{EncryptedMessage, KeysGroup, MessageHeader, MessageKey};
+use super::signal_ratchet;
+use super::store::OmemoStore;
+use super::trust::TrustStore;
 
 /// Cached bundle info for peers (used during inbound session creation).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -124,8 +124,7 @@ impl OmemoManager {
                 );
                 return Self::generate(Self::generate_compatible_device_id(), store);
             }
-            let legacy_sessions =
-                store.load_legacy_sessions(&pickle_key).unwrap_or_default();
+            let legacy_sessions = store.load_legacy_sessions(&pickle_key).unwrap_or_default();
             let device_lists = store.load_device_lists().unwrap_or_default();
             let bundle_cache = store.load_bundle_cache().unwrap_or_default();
             let trust_store = store.load_trust_store().unwrap_or_default();
@@ -201,7 +200,12 @@ impl OmemoManager {
         self.bundle_cache
             .entry(jid.to_string())
             .or_default()
-            .insert(device_id, CachedBundle { identity_key: ik_bytes });
+            .insert(
+                device_id,
+                CachedBundle {
+                    identity_key: ik_bytes,
+                },
+            );
     }
 
     /// Create a libsignal v3 session from a peer bundle and store it under the legacy session map.
@@ -531,15 +535,17 @@ impl OmemoManager {
             let identity = signal_ratchet::keys::IdentityKeyPair::from_secret(
                 self.account.identity_secret_key_bytes(),
             );
-            let prekey_msg = match signal_ratchet::proto::PreKeySignalMessage::decode(
-                &key_slot.data[1..],
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::info!("[OMEMO decrypt] Failed to parse PreKeySignalMessage: {}", e);
-                    return None;
-                }
-            };
+            let prekey_msg =
+                match signal_ratchet::proto::PreKeySignalMessage::decode(&key_slot.data[1..]) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::info!(
+                            "[OMEMO decrypt] Failed to parse PreKeySignalMessage: {}",
+                            e
+                        );
+                        return None;
+                    }
+                };
             let signed_prekey_secret = match self
                 .account
                 .fallback_secret_key_by_id(prekey_msg.signed_pre_key_id)
@@ -650,15 +656,14 @@ mod tests {
 
     #[test]
     fn legacy_self_chat_roundtrip() {
-        let mut mgr = OmemoManager::generate(12345, Box::new(crate::store::MemoryStore::new()));
+        let mut mgr =
+            OmemoManager::generate(12345, Box::new(crate::omemo::store::MemoryStore::new()));
         let jid = "user@example.com";
         mgr.set_our_jid(jid);
         mgr.update_device_list(jid, vec![12345]);
 
         let encrypted = mgr.encrypt_message(jid, "hello legacy").expect("encrypt");
-        let decrypted = mgr
-            .decrypt_message(jid, &encrypted)
-            .expect("decrypt");
+        let decrypted = mgr.decrypt_message(jid, &encrypted).expect("decrypt");
         assert_eq!(decrypted, "hello legacy");
     }
 
@@ -667,11 +672,13 @@ mod tests {
         let alice_jid = "alice@example.com";
         let bob_jid = "bob@example.com";
 
-        let mut alice = OmemoManager::generate(11111, Box::new(crate::store::MemoryStore::new()));
+        let mut alice =
+            OmemoManager::generate(11111, Box::new(crate::omemo::store::MemoryStore::new()));
         alice.set_our_jid(alice_jid);
         alice.update_device_list(bob_jid, vec![22222]);
 
-        let mut bob = OmemoManager::generate(22222, Box::new(crate::store::MemoryStore::new()));
+        let mut bob =
+            OmemoManager::generate(22222, Box::new(crate::omemo::store::MemoryStore::new()));
         bob.set_our_jid(bob_jid);
 
         let bob_bundle = bob.self_bundle().expect("bob self bundle");
@@ -690,7 +697,10 @@ mod tests {
         let encrypted2 = alice
             .encrypt_message(bob_jid, "second legacy message")
             .expect("encrypt second");
-        assert!(!encrypted2.header.keys[0].keys[0].kex, "second msg should be normal");
+        assert!(
+            !encrypted2.header.keys[0].keys[0].kex,
+            "second msg should be normal"
+        );
         let decrypted2 = bob
             .decrypt_message(alice_jid, &encrypted2)
             .expect("decrypt second");

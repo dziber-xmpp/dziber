@@ -38,7 +38,7 @@ pub fn set_unread_count(count: u32) {
     target_os = "netbsd"
 ))]
 pub(crate) mod sni_tray {
-    use super::{TrayEvent, EVENT_RX, UNREAD_COUNT};
+    use super::{EVENT_RX, TrayEvent, UNREAD_COUNT};
     use image::{Rgba, RgbaImage};
     use ksni::TrayMethods;
     use std::sync::atomic::Ordering;
@@ -174,7 +174,14 @@ pub(crate) mod sni_tray {
         draw_line(img, 32, 34, right, top, Rgba([46, 134, 222, 255]));
     }
 
-    pub(crate) fn draw_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgba<u8>) {
+    pub(crate) fn draw_line(
+        img: &mut RgbaImage,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        color: Rgba<u8>,
+    ) {
         let dx = (x1 - x0).abs();
         let dy = (y1 - y0).abs();
         let sx = if x0 < x1 { 1 } else { -1 };
@@ -279,7 +286,6 @@ mod sni_tray {
     pub(super) fn refresh_icon() {}
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,8 +312,8 @@ mod tests {
         target_os = "netbsd"
     ))]
     mod unix {
+        use super::UNREAD_COUNT;
         use super::sni_tray::*;
-        use super::{UNREAD_COUNT};
         use image::{Rgba, RgbaImage};
         use ksni::Tray;
         use ksni::menu::MenuItem;
