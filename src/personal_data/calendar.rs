@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::{Value, json};
 
 use crate::models::account::CalendarAccount;
@@ -30,10 +30,7 @@ impl CalDavClient {
     }
 
     async fn root(&self) -> String {
-        self.dav
-            .discover_home_set("caldav")
-            .await
-            .unwrap_or_else(|| self.caldav_root())
+        self.caldav_root()
     }
 
     fn account_id(&self) -> String {
@@ -697,7 +694,10 @@ impl JmapCalendarClient {
     }
 
     pub async fn list_calendars(&self) -> Result<Vec<Calendar>, String> {
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         let response = self
             .jmap
             .request(
@@ -724,7 +724,7 @@ impl JmapCalendarClient {
                 if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                     calendars.push(Calendar {
                         id: id.to_string(),
-                        account_id: self.jmap.account_id.clone(),
+                        account_id: account_id.clone(),
                         href: String::new(),
                         name: item
                             .get("name")
@@ -748,9 +748,12 @@ impl JmapCalendarClient {
         calendar: &Calendar,
         year: i32,
     ) -> Result<Vec<CalendarEvent>, String> {
-        let account_id = self.jmap.account_id.clone();
-        let _start = format!("{}-01-01T00:00:00Z", year);
-        let _end = format!("{}-01-01T00:00:00Z", year + 1);
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
+        let start = format!("{year:04}-01-01T00:00:00");
+        let end = format!("{:04}-01-01T00:00:00", year + 1);
 
         let response = self
             .jmap
@@ -759,19 +762,38 @@ impl JmapCalendarClient {
                     "urn:ietf:params:jmap:core",
                     "urn:ietf:params:jmap:calendars",
                 ],
-                vec![json!([
-                    "CalendarEvent/get",
-                    {
-                        "accountId": account_id,
-                        "ids": null,
-                        "properties": [
-                            "id", "calendarIds", "uid", "title", "start", "timeZone",
-                            "duration", "end", "showWithoutTime", "description",
-                            "location", "status"
-                        ]
-                    },
-                    "0"
-                ])],
+                vec![
+                    json!([
+                        "CalendarEvent/query",
+                        {
+                            "accountId": account_id,
+                            "timeZone": "Etc/UTC",
+                            "filter": {
+                                "inCalendar": calendar.id,
+                                "after": start,
+                                "before": end
+                            },
+                            "sort": [{ "property": "start", "isAscending": true }]
+                        },
+                        "eventIds"
+                    ]),
+                    json!([
+                        "CalendarEvent/get",
+                        {
+                            "accountId": account_id,
+                            "#ids": {
+                                "resultOf": "eventIds",
+                                "name": "CalendarEvent/query",
+                                "path": "/ids"
+                            },
+                            "properties": [
+                                "id", "calendarIds", "uid", "title", "start", "timeZone",
+                                "duration", "showWithoutTime", "description", "locations", "status"
+                            ]
+                        },
+                        "events"
+                    ]),
+                ],
             )
             .await?;
 
@@ -780,10 +802,8 @@ impl JmapCalendarClient {
             && let Some(list) = args.get("list").and_then(|v| v.as_array())
         {
             for item in list {
-                if let Some(event) = parse_jmap_event(&self.jmap.account_id, item)
+                if let Some(event) = parse_jmap_event(&account_id, item)
                     && event.calendar_id == calendar.id
-                    && event.start.year() >= year
-                    && event.start.year() <= year + 1
                 {
                     events.push(event);
                 }
@@ -794,48 +814,20 @@ impl JmapCalendarClient {
 
     pub async fn list_tasks(
         &self,
-        calendar: &Calendar,
+        _calendar: &Calendar,
         _year: i32,
     ) -> Result<Vec<CalendarTask>, String> {
-        let account_id = self.jmap.account_id.clone();
-        let response = self
-            .jmap
-            .request(
-                &[
-                    "urn:ietf:params:jmap:core",
-                    "urn:ietf:params:jmap:calendars",
-                ],
-                vec![json!([
-                    "Task/get",
-                    {
-                        "accountId": account_id,
-                        "ids": null,
-                        "properties": [
-                            "id", "calendarIds", "uid", "title", "due", "showWithoutTime",
-                            "description", "location", "status", "priority", "percentComplete"
-                        ]
-                    },
-                    "0"
-                ])],
-            )
-            .await?;
-
-        let mut tasks = Vec::new();
-        if let Some(args) = self.jmap.extract_response(&response, "Task/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array())
-        {
-            for item in list {
-                if let Some(task) = parse_jmap_task(&self.jmap.account_id, item)
-                    && task.calendar_id == calendar.id
-                {
-                    tasks.push(task);
-                }
-            }
-        }
-        Ok(tasks)
+        // JMAP for Calendars does not define VTODO/task methods. Keep tasks
+        // optional so servers that only implement the calendar capability can
+        // still load calendars and events successfully.
+        Ok(Vec::new())
     }
 
     pub async fn create_calendar(&self, id: &str, name: &str) -> Result<String, String> {
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         let response = self
             .jmap
             .request(
@@ -844,7 +836,7 @@ impl JmapCalendarClient {
                     "urn:ietf:params:jmap:calendars",
                 ],
                 vec![json!(["Calendar/set", {
-                "accountId": self.jmap.account_id,
+                "accountId": account_id,
                 "create": { (id): { "name": name } },
             }, "0"])],
             )
@@ -861,6 +853,10 @@ impl JmapCalendarClient {
     }
 
     pub async fn rename_calendar(&self, calendar: &Calendar, name: &str) -> Result<(), String> {
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         self.jmap
             .request(
                 &[
@@ -868,7 +864,7 @@ impl JmapCalendarClient {
                     "urn:ietf:params:jmap:calendars",
                 ],
                 vec![json!(["Calendar/set", {
-                "accountId": self.jmap.account_id,
+                "accountId": account_id,
                 "update": { (calendar.id.clone()): { "name": name } },
             }, "0"])],
             )
@@ -877,6 +873,10 @@ impl JmapCalendarClient {
     }
 
     pub async fn delete_calendar(&self, calendar: &Calendar) -> Result<(), String> {
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         self.jmap
             .request(
                 &[
@@ -884,7 +884,7 @@ impl JmapCalendarClient {
                     "urn:ietf:params:jmap:calendars",
                 ],
                 vec![json!(["Calendar/set", {
-                "accountId": self.jmap.account_id,
+                "accountId": account_id,
                 "destroy": [calendar.id.clone()],
             }, "0"])],
             )
@@ -893,7 +893,10 @@ impl JmapCalendarClient {
     }
 
     pub async fn save_event(&self, event: &CalendarEvent) -> Result<(), String> {
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         let payload = event_to_jmap_json(event);
         let method_call = if event.id.is_empty() || event.id.starts_with('~') {
             json!([
@@ -935,7 +938,10 @@ impl JmapCalendarClient {
         if event.id.is_empty() {
             return Ok(());
         }
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         self.jmap
             .request(
                 &[
@@ -956,7 +962,10 @@ impl JmapCalendarClient {
     }
 
     pub async fn save_task(&self, task: &CalendarTask) -> Result<(), String> {
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         let payload = task_to_jmap_json(task);
         let method_call = if task.id.is_empty() || task.id.starts_with('~') {
             json!([
@@ -998,7 +1007,10 @@ impl JmapCalendarClient {
         if task.id.is_empty() {
             return Ok(());
         }
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:calendars")
+            .await?;
         self.jmap
             .request(
                 &[
@@ -1087,10 +1099,14 @@ fn parse_jmap_event(account_id: &str, item: &Value) -> Option<CalendarEvent> {
         .unwrap_or("")
         .to_string();
     let location = item
-        .get("location")
-        .and_then(|v| v.as_str())
+        .get("locations")
+        .and_then(Value::as_object)
+        .and_then(|locations| locations.values().next())
+        .and_then(|location| location.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| item.get("location").and_then(Value::as_str))
         .unwrap_or("")
-        .to_string();
+        .to_owned();
     let status = item
         .get("status")
         .and_then(|v| v.as_str())
@@ -1135,77 +1151,17 @@ fn parse_jmap_event(account_id: &str, item: &Value) -> Option<CalendarEvent> {
     })
 }
 
-fn parse_jmap_task(account_id: &str, item: &Value) -> Option<CalendarTask> {
-    let id = item.get("id")?.as_str()?.to_string();
-    let calendar_id = item
-        .get("calendarIds")
-        .and_then(|v| v.as_object())?
-        .keys()
-        .next()?
-        .clone();
-    let uid = item
-        .get("uid")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&id)
-        .to_string();
-    let title = item
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let description = item
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let location = item
-        .get("location")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let status = item
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let all_day = item
-        .get("showWithoutTime")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let due = item
-        .get("due")
-        .and_then(|v| v.as_str())
-        .and_then(parse_jmap_datetime);
-
-    let priority = item.get("priority").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let percent_complete = item
-        .get("percentComplete")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0) as i32;
-
-    Some(CalendarTask {
-        id,
-        account_id: account_id.to_string(),
-        calendar_id,
-        href: String::new(),
-        etag: None,
-        uid,
-        title,
-        due,
-        all_day,
-        description,
-        location,
-        status,
-        priority,
-        percent_complete,
-        completed: None,
-        raw_ics: String::new(),
-    })
-}
-
 fn event_to_jmap_json(event: &CalendarEvent) -> Value {
+    let locations = if event.location.is_empty() {
+        json!({})
+    } else {
+        json!({
+            "location": {
+                "@type": "Location",
+                "name": event.location.clone()
+            }
+        })
+    };
     if event.all_day {
         json!({
             "calendarIds": { event.calendar_id.clone(): true },
@@ -1215,7 +1171,7 @@ fn event_to_jmap_json(event: &CalendarEvent) -> Value {
             "duration": "P1D",
             "showWithoutTime": true,
             "description": event.description.clone(),
-            "location": event.location.clone(),
+            "locations": locations,
             "status": event.status.clone()
         })
     } else {
@@ -1224,23 +1180,33 @@ fn event_to_jmap_json(event: &CalendarEvent) -> Value {
             "calendarIds": { event.calendar_id.clone(): true },
             "uid": event.uid.clone(),
             "title": event.title.clone(),
-            "start": event.start.to_rfc3339(),
-            "timeZone": "UTC",
+            "start": event.start.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "timeZone": "Etc/UTC",
             "duration": duration_to_iso(duration),
             "description": event.description.clone(),
-            "location": event.location.clone(),
+            "locations": locations,
             "status": event.status.clone()
         })
     }
 }
 
 fn task_to_jmap_json(task: &CalendarTask) -> Value {
+    let locations = if task.location.is_empty() {
+        json!({})
+    } else {
+        json!({
+            "location": {
+                "@type": "Location",
+                "name": task.location.clone()
+            }
+        })
+    };
     let mut obj = json!({
         "calendarIds": { task.calendar_id.clone(): true },
         "uid": task.uid.clone(),
         "title": task.title.clone(),
         "description": task.description.clone(),
-        "location": task.location.clone(),
+        "locations": locations,
         "status": task.status.clone(),
         "priority": task.priority,
         "percentComplete": task.percent_complete

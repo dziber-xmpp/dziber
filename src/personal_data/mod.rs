@@ -1,8 +1,8 @@
 #[cfg(any(feature = "desktop", feature = "calendar"))]
 pub mod calendar;
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "contacts"))]
 pub mod contacts;
-#[cfg(any(feature = "desktop", feature = "calendar"))]
+#[cfg(any(feature = "desktop", feature = "calendar", feature = "contacts"))]
 pub mod dav;
 pub mod imap_smtp;
 pub mod jmap;

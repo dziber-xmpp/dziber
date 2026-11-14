@@ -25,6 +25,7 @@ mail = [
   "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:webpki-roots", "dep:percent-encoding",
 ]
 calendar = ["mail", "dep:roxmltree"]
+contacts = ["mail", "dep:calcard", "dep:roxmltree"]
 omemo = [
   "dep:aes", "dep:aes-gcm", "dep:base64", "dep:cbc", "dep:hex", "dep:hkdf",
   "dep:hmac", "dep:minidom", "dep:rand", "dep:rand_core", "dep:sha2", "dep:subtle",

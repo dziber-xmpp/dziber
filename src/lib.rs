@@ -3,7 +3,7 @@ pub mod models;
 #[cfg(feature = "omemo")]
 pub mod omemo;
 
-#[cfg(any(feature = "desktop", feature = "mail", feature = "calendar"))]
+#[cfg(any(feature = "desktop", feature = "mail", feature = "calendar", feature = "contacts"))]
 pub mod personal_data;
 
 #[cfg(feature = "desktop")]

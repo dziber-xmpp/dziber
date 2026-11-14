@@ -146,7 +146,13 @@ impl ManageSieveClient {
         if !status.starts_with("OK") {
             return Err(format!("GETSCRIPT failed: {}", status));
         }
-        extract_literal(&lines.join("\n"))
+        lines
+            .iter()
+            .rev()
+            .find(|line| {
+                !line.starts_with("OK") && !line.starts_with("NO") && !line.starts_with("BYE")
+            })
+            .cloned()
             .ok_or_else(|| "GETSCRIPT response missing script content".to_string())
     }
 
@@ -266,8 +272,7 @@ impl ManageSieveClient {
                     .await
                     .map_err(|e| format!("literal CRLF read failed: {}", e))?;
                 // Store the line with literal content appended.
-                let content = String::from_utf8_lossy(&literal);
-                lines.push(format!("{} {}", line, content));
+                lines.push(String::from_utf8_lossy(&literal).into_owned());
             } else {
                 lines.push(line);
             }
@@ -328,17 +333,41 @@ fn parse_script_list(response: &str) -> Vec<(String, bool)> {
     scripts
 }
 
+#[cfg(test)]
 fn extract_literal(response: &str) -> Option<String> {
-    for line in response.lines() {
-        let line = line.trim();
-        if let Some(size) = literal_size(line) {
-            // The literal content is the remainder of the line after the marker.
-            let marker_end = line.rfind('{').unwrap() + size.to_string().len() + 2;
-            let remainder = line.get(marker_end..).unwrap_or("").trim();
-            if !remainder.is_empty() {
-                return Some(unquote(remainder).unwrap_or_else(|| remainder.to_string()));
-            }
+    let bytes = response.as_bytes();
+    for (start, byte) in bytes.iter().enumerate() {
+        if *byte != b'{' {
+            continue;
         }
+
+        let mut marker_end = start + 1;
+        while bytes.get(marker_end).is_some_and(u8::is_ascii_digit) {
+            marker_end += 1;
+        }
+        if marker_end == start + 1 {
+            continue;
+        }
+        if bytes.get(marker_end) == Some(&b'+') {
+            marker_end += 1;
+        }
+        if bytes.get(marker_end) != Some(&b'}') {
+            continue;
+        }
+
+        let size = std::str::from_utf8(&bytes[start + 1..marker_end])
+            .ok()?
+            .trim_end_matches('+')
+            .parse::<usize>()
+            .ok()?;
+        let mut content_start = marker_end + 1;
+        // read_response inserts one separator between the marker line and its literal.
+        if bytes.get(content_start) == Some(&b' ') {
+            content_start += 1;
+        }
+        let content_end = content_start.checked_add(size)?;
+        let content = bytes.get(content_start..content_end)?;
+        return Some(String::from_utf8_lossy(content).into_owned());
     }
     None
 }

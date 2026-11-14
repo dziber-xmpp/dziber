@@ -16,6 +16,7 @@ const FRAGMENT: &AsciiSet = &CONTROLS
     .add(b'\\')
     .add(b'^')
     .add(b'~')
+    .add(b'@')
     .add(b'[')
     .add(b']');
 
@@ -315,7 +316,7 @@ mod tests {
         assert_eq!(encode_account("user name"), "user%20name");
         assert_eq!(encode_account("a#b"), "a%23b");
         assert_eq!(encode_account("100%"), "100%25");
-        assert_eq!(encode_account("user@example.com"), "user@example.com");
+        assert_eq!(encode_account("user@example.com"), "user%40example.com");
     }
 
     #[test]

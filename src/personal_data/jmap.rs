@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 use crate::models::account::ServerAccount;
 use crate::personal_data::auth_header_for_account;
@@ -8,6 +9,7 @@ pub struct JmapClient {
     base_url: String,
     auth_header: String,
     pub account_id: String,
+    discovered_accounts: tokio::sync::OnceCell<HashMap<String, String>>,
 }
 
 impl JmapClient {
@@ -20,7 +22,54 @@ impl JmapClient {
             base_url,
             auth_header,
             account_id,
+            discovered_accounts: tokio::sync::OnceCell::new(),
         }
+    }
+
+    pub async fn account_id_for(&self, capability: &str) -> Result<String, String> {
+        let accounts = self
+            .discovered_accounts
+            .get_or_try_init(|| async {
+                let response = self
+                    .client
+                    .get(format!("{}/jmap/session", self.base_url))
+                    .header("Authorization", &self.auth_header)
+                    .header("Accept", "application/json")
+                    .send()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .error_for_status()
+                    .map_err(|error| error.to_string())?;
+                let session: Value = response.json().await.map_err(|error| error.to_string())?;
+                let mut accounts = HashMap::new();
+                if let Some(primary) = session.get("primaryAccounts").and_then(Value::as_object) {
+                    for (capability, account_id) in primary {
+                        if let Some(account_id) = account_id.as_str() {
+                            accounts.insert(capability.clone(), account_id.to_owned());
+                        }
+                    }
+                }
+                if let Some(session_accounts) = session.get("accounts").and_then(Value::as_object) {
+                    for (account_id, account) in session_accounts {
+                        if let Some(capabilities) = account
+                            .get("accountCapabilities")
+                            .and_then(Value::as_object)
+                        {
+                            for capability in capabilities.keys() {
+                                accounts
+                                    .entry(capability.clone())
+                                    .or_insert_with(|| account_id.clone());
+                            }
+                        }
+                    }
+                }
+                Ok::<_, String>(accounts)
+            })
+            .await?;
+        Ok(accounts
+            .get(capability)
+            .cloned()
+            .unwrap_or_else(|| self.account_id.clone()))
     }
 
     pub async fn request(
@@ -48,7 +97,32 @@ impl JmapClient {
             return Err(format!("JMAP request failed: HTTP {}", status));
         }
 
-        response.json().await.map_err(|e| e.to_string())
+        let result: Value = response.json().await.map_err(|e| e.to_string())?;
+        if let Some(responses) = result.get("methodResponses").and_then(Value::as_array) {
+            for response in responses {
+                if response.get(0).and_then(Value::as_str) == Some("error") {
+                    let error = response.get(1).cloned().unwrap_or(Value::Null);
+                    let description = error
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| error.to_string());
+                    return Err(description);
+                }
+                if let Some(body) = response.get(1).and_then(Value::as_object) {
+                    for field in ["notCreated", "notUpdated", "notDestroyed"] {
+                        if let Some(errors) = body
+                            .get(field)
+                            .and_then(Value::as_object)
+                            .filter(|errors| !errors.is_empty())
+                        {
+                            return Err(Value::Object(errors.clone()).to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub fn extract_response<'a>(&self, data: &'a Value, method_name: &str) -> Option<&'a Value> {

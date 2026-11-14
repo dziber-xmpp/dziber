@@ -329,7 +329,10 @@ impl JmapContactsClient {
     }
 
     pub async fn list_addressbooks(&self) -> Result<Vec<Addressbook>, String> {
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
         let response = self
             .jmap
             .request(
@@ -353,7 +356,7 @@ impl JmapContactsClient {
                 if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                     books.push(Addressbook {
                         id: id.to_string(),
-                        account_id: self.jmap.account_id.clone(),
+                        account_id: account_id.clone(),
                         href: String::new(),
                         name: item
                             .get("name")
@@ -372,7 +375,10 @@ impl JmapContactsClient {
         &self,
         addressbook: &Addressbook,
     ) -> Result<Vec<ContactCard>, String> {
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
         let response = self
             .jmap
             .request(
@@ -397,7 +403,7 @@ impl JmapContactsClient {
             && let Some(list) = args.get("list").and_then(|v| v.as_array())
         {
             for item in list {
-                if let Some(contact) = parse_jmap_contact(&self.jmap.account_id, item)
+                if let Some(contact) = parse_jmap_contact(&account_id, item)
                     && contact.addressbook_id == addressbook.id
                 {
                     contacts.push(contact);
@@ -408,7 +414,10 @@ impl JmapContactsClient {
     }
 
     pub async fn save_contact(&self, contact: &ContactCard) -> Result<(), String> {
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
         let payload = contact_to_jmap_json(contact);
         let method_call = if contact.id.is_empty() || contact.id.starts_with('~') {
             let c_id = "new-contact";
@@ -448,7 +457,10 @@ impl JmapContactsClient {
         if contact.id.is_empty() {
             return Ok(());
         }
-        let account_id = self.jmap.account_id.clone();
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
         self.jmap
             .request(
                 &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
@@ -457,6 +469,79 @@ impl JmapContactsClient {
                     {
                         "accountId": account_id,
                         "destroy": [contact.id.clone()]
+                    },
+                    "0"
+                ])],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_addressbook(&self, name: &str) -> Result<String, String> {
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
+        let response = self
+            .jmap
+            .request(
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
+                vec![json!([
+                    "AddressBook/set",
+                    { "accountId": account_id, "create": { "new-book": { "name": name } } },
+                    "0"
+                ])],
+            )
+            .await?;
+        self.jmap
+            .extract_response(&response, "AddressBook/set")
+            .and_then(|body| body.get("created"))
+            .and_then(|created| created.get("new-book"))
+            .and_then(|book| book.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| "JMAP did not return the created address book".to_string())
+    }
+
+    pub async fn rename_addressbook(
+        &self,
+        addressbook: &Addressbook,
+        name: &str,
+    ) -> Result<(), String> {
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
+        self.jmap
+            .request(
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
+                vec![json!([
+                    "AddressBook/set",
+                    {
+                        "accountId": account_id,
+                        "update": { (addressbook.id.clone()): { "name": name } }
+                    },
+                    "0"
+                ])],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_addressbook(&self, addressbook: &Addressbook) -> Result<(), String> {
+        let account_id = self
+            .jmap
+            .account_id_for("urn:ietf:params:jmap:contacts")
+            .await?;
+        self.jmap
+            .request(
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"],
+                vec![json!([
+                    "AddressBook/set",
+                    {
+                        "accountId": account_id,
+                        "onDestroyRemoveContents": true,
+                        "destroy": [addressbook.id.clone()]
                     },
                     "0"
                 ])],
@@ -522,8 +607,7 @@ fn parse_jmap_contact(account_id: &str, item: &Value) -> Option<ContactCard> {
         .map(|obj| {
             obj.values()
                 .filter_map(|p| {
-                    p.get("phone")
-                        .or_else(|| p.get("value"))
+                    p.get("number")
                         .and_then(|a| a.as_str())
                         .map(|s| s.to_string())
                 })
@@ -579,13 +663,14 @@ fn contact_to_jmap_json(contact: &ContactCard) -> Value {
 
     let mut phones = serde_json::Map::new();
     for (i, phone) in contact.phones.iter().enumerate() {
-        phones.insert(i.to_string(), json!({ "phone": phone }));
+        phones.insert(i.to_string(), json!({ "number": phone }));
     }
 
     json!({
         "addressBookIds": {
             contact.addressbook_id.clone(): true
         },
+        "uid": contact.uid.clone(),
         "name": {
             "full": contact.display_name.clone(),
             "components": [
@@ -645,6 +730,31 @@ impl ContactsClient {
         match self {
             Self::Dav(c) => c.delete_contact(contact).await,
             Self::Jmap(c) => c.delete_contact(contact).await,
+        }
+    }
+
+    pub async fn create_addressbook(&self, name: &str) -> Result<String, String> {
+        match self {
+            Self::Dav(_) => Err("Address book creation is only available through JMAP".to_string()),
+            Self::Jmap(c) => c.create_addressbook(name).await,
+        }
+    }
+
+    pub async fn rename_addressbook(
+        &self,
+        addressbook: &Addressbook,
+        name: &str,
+    ) -> Result<(), String> {
+        match self {
+            Self::Dav(_) => Err("Address book renaming is only available through JMAP".to_string()),
+            Self::Jmap(c) => c.rename_addressbook(addressbook, name).await,
+        }
+    }
+
+    pub async fn delete_addressbook(&self, addressbook: &Addressbook) -> Result<(), String> {
+        match self {
+            Self::Dav(_) => Err("Address book deletion is only available through JMAP".to_string()),
+            Self::Jmap(c) => c.delete_addressbook(addressbook).await,
         }
     }
 }
