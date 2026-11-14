@@ -102,21 +102,24 @@ impl CalDavClient {
             format!("/{}", calendar.href)
         };
 
+        let time_range = if year > 0 {
+            format!(
+                "<C:time-range start=\"{year}0101T000000Z\" end=\"{}0101T000000Z\"/>",
+                year + 1
+            )
+        } else {
+            String::new()
+        };
         let body = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
   <D:prop><D:getetag/><C:calendar-data/></D:prop>
   <C:filter>
     <C:comp-filter name="VCALENDAR">
-      <C:comp-filter name="{}">
-        <C:time-range start="{}0101T000000Z" end="{}0101T000000Z"/>
-      </C:comp-filter>
+      <C:comp-filter name="{component}">{time_range}</C:comp-filter>
     </C:comp-filter>
   </C:filter>
-</C:calendar-query>"#,
-            component,
-            year,
-            year + 1
+</C:calendar-query>"#
         );
 
         let responses = self
@@ -540,7 +543,26 @@ fn parse_event(
 }
 
 fn event_component_lines(event: &CalendarEvent) -> Vec<String> {
-    vec![
+    if event.raw_ics.contains("BEGIN:VEVENT") {
+        let mut in_event = false;
+        let mut component = Vec::new();
+        for line in event.raw_ics.lines() {
+            if line.trim() == "BEGIN:VEVENT" {
+                in_event = true;
+            }
+            if in_event {
+                component.push(line.to_owned());
+            }
+            if in_event && line.trim() == "END:VEVENT" {
+                break;
+            }
+        }
+        if !component.is_empty() {
+            return component;
+        }
+    }
+
+    let mut lines = vec![
         "BEGIN:VEVENT".to_string(),
         format!("UID:{}", event.uid),
         format!("SUMMARY:{}", encode_ics_text(&event.title)),
@@ -565,7 +587,9 @@ fn event_component_lines(event: &CalendarEvent) -> Vec<String> {
             }
         ),
         "END:VEVENT".to_string(),
-    ]
+    ];
+    lines.splice(lines.len() - 1..lines.len() - 1, event.raw_ics.lines().map(str::to_owned));
+    lines
 }
 
 fn serialize_event(event: &CalendarEvent) -> String {
@@ -752,62 +776,83 @@ impl JmapCalendarClient {
             .jmap
             .account_id_for("urn:ietf:params:jmap:calendars")
             .await?;
-        let start = format!("{year:04}-01-01T00:00:00");
-        let end = format!("{:04}-01-01T00:00:00", year + 1);
-
-        let response = self
-            .jmap
-            .request(
-                &[
-                    "urn:ietf:params:jmap:core",
-                    "urn:ietf:params:jmap:calendars",
-                ],
-                vec![
-                    json!([
-                        "CalendarEvent/query",
-                        {
-                            "accountId": account_id,
-                            "timeZone": "Etc/UTC",
-                            "filter": {
-                                "inCalendar": calendar.id,
-                                "after": start,
-                                "before": end
-                            },
-                            "sort": [{ "property": "start", "isAscending": true }]
-                        },
-                        "eventIds"
-                    ]),
-                    json!([
-                        "CalendarEvent/get",
-                        {
-                            "accountId": account_id,
-                            "#ids": {
-                                "resultOf": "eventIds",
-                                "name": "CalendarEvent/query",
-                                "path": "/ids"
-                            },
-                            "properties": [
-                                "id", "calendarIds", "uid", "title", "start", "timeZone",
-                                "duration", "showWithoutTime", "description", "locations", "status"
-                            ]
-                        },
-                        "events"
-                    ]),
-                ],
-            )
-            .await?;
+        let mut filter = json!({ "inCalendar": calendar.id });
+        if year > 0 {
+            filter["after"] = json!(format!("{year:04}-01-01T00:00:00"));
+            filter["before"] = json!(format!("{:04}-01-01T00:00:00", year + 1));
+        }
 
         let mut events = Vec::new();
-        if let Some(args) = self.jmap.extract_response(&response, "CalendarEvent/get")
-            && let Some(list) = args.get("list").and_then(|v| v.as_array())
-        {
-            for item in list {
-                if let Some(event) = parse_jmap_event(&account_id, item)
-                    && event.calendar_id == calendar.id
-                {
-                    events.push(event);
+        let mut position = 0;
+        loop {
+            let response = self
+                .jmap
+                .request(
+                    &[
+                        "urn:ietf:params:jmap:core",
+                        "urn:ietf:params:jmap:calendars",
+                    ],
+                    vec![
+                        json!([
+                            "CalendarEvent/query",
+                            {
+                                "accountId": account_id,
+                                "timeZone": "Etc/UTC",
+                                "expandRecurrences": year > 0,
+                                "filter": filter,
+                                "sort": [{ "property": "start", "isAscending": true }],
+                                "position": position,
+                                "limit": 256
+                            },
+                            "eventIds"
+                        ]),
+                        json!([
+                            "CalendarEvent/get",
+                            {
+                                "accountId": account_id,
+                                "#ids": {
+                                    "resultOf": "eventIds",
+                                    "name": "CalendarEvent/query",
+                                    "path": "/ids"
+                                },
+                                "properties": [
+                                    "id", "calendarIds", "uid", "title", "start", "timeZone",
+                                    "duration", "showWithoutTime", "description", "locations", "status",
+                                    "recurrenceRules", "excludedRecurrenceRules", "recurrenceOverrides"
+                                ]
+                            },
+                            "events"
+                        ]),
+                    ],
+                )
+                .await?;
+
+            let query = self
+                .jmap
+                .extract_response(&response, "CalendarEvent/query");
+            let ids_count = query
+                .and_then(|args| args.get("ids"))
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            if let Some(args) = self.jmap.extract_response(&response, "CalendarEvent/get")
+                && let Some(list) = args.get("list").and_then(Value::as_array)
+            {
+                for item in list {
+                    if let Some(event) = parse_jmap_event(&account_id, item)
+                        && event.calendar_id == calendar.id
+                    {
+                        events.push(event);
+                    }
                 }
             }
+            let has_more = query
+                .and_then(|args| args.get("hasMore"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !has_more || ids_count == 0 {
+                break;
+            }
+            position += ids_count;
         }
         Ok(events)
     }
@@ -1133,6 +1178,15 @@ fn parse_jmap_event(account_id: &str, item: &Value) -> Option<CalendarEvent> {
         }
     };
 
+    let recurrence = item
+        .get("recurrenceRules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(jmap_recurrence_rule_to_ics)
+        .collect::<Vec<_>>()
+        .join("\r\n");
+
     Some(CalendarEvent {
         id,
         account_id: account_id.to_string(),
@@ -1147,8 +1201,82 @@ fn parse_jmap_event(account_id: &str, item: &Value) -> Option<CalendarEvent> {
         description,
         location,
         status,
-        raw_ics: String::new(),
+        raw_ics: recurrence,
     })
+}
+
+fn jmap_recurrence_rule_to_ics(rule: &Value) -> Option<String> {
+    let frequency = rule.get("frequency")?.as_str()?.to_ascii_uppercase();
+    let mut parts = vec![format!("FREQ={frequency}")];
+    for (key, property) in [
+        ("interval", "INTERVAL"),
+        ("count", "COUNT"),
+        ("until", "UNTIL"),
+    ] {
+        if let Some(value) = rule.get(key) {
+            let value = value.as_str().map(str::to_owned).or_else(|| {
+                value
+                    .as_i64()
+                    .map(|number| number.to_string())
+            });
+            if let Some(value) = value {
+                let value = if property == "UNTIL" {
+                    value.replace('-', "").replace(':', "")
+                } else {
+                    value
+                };
+                parts.push(format!("{property}={value}"));
+            }
+        }
+    }
+    for (key, property) in [
+        ("byMonth", "BYMONTH"),
+        ("byMonthDay", "BYMONTHDAY"),
+        ("byYearDay", "BYYEARDAY"),
+        ("byWeekNo", "BYWEEKNO"),
+        ("byHour", "BYHOUR"),
+        ("byMinute", "BYMINUTE"),
+        ("bySecond", "BYSECOND"),
+        ("bySetPosition", "BYSETPOS"),
+    ] {
+        if let Some(values) = rule.get(key).and_then(Value::as_array) {
+            let values = values
+                .iter()
+                .filter_map(|value| value.as_i64().map(|number| number.to_string()))
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                parts.push(format!("{property}={}", values.join(",")));
+            }
+        }
+    }
+    if let Some(days) = rule.get("byDay").and_then(Value::as_array) {
+        let values = days
+            .iter()
+            .filter_map(|day| {
+                let name = day.get("day")?.as_str()?;
+                let abbreviation = match name {
+                    "monday" => "MO",
+                    "tuesday" => "TU",
+                    "wednesday" => "WE",
+                    "thursday" => "TH",
+                    "friday" => "FR",
+                    "saturday" => "SA",
+                    "sunday" => "SU",
+                    _ => return None,
+                };
+                let ordinal = day
+                    .get("nthOfPeriod")
+                    .and_then(Value::as_i64)
+                    .map(|number| number.to_string())
+                    .unwrap_or_default();
+                Some(format!("{ordinal}{abbreviation}"))
+            })
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            parts.push(format!("BYDAY={}", values.join(",")));
+        }
+    }
+    Some(format!("RRULE:{}", parts.join(";")))
 }
 
 fn event_to_jmap_json(event: &CalendarEvent) -> Value {
