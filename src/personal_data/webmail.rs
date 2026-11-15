@@ -241,7 +241,7 @@ impl WebmailClient {
             ["Email/get", {
                 "accountId": self.account_id,
                 "#ids": { "resultOf": "emailIds", "name": "Email/query", "path": "/ids" },
-                "properties": ["id", "mailboxIds", "keywords", "from", "to", "subject", "receivedAt", "preview", "hasAttachment", "size"],
+                "properties": ["id", "threadId", "mailboxIds", "keywords", "from", "to", "subject", "receivedAt", "preview", "hasAttachment", "size"],
             }, "emails"],
         ])).await?;
         response_list(&result, "emails")
@@ -252,14 +252,27 @@ impl WebmailClient {
             "accountId": self.account_id,
             "ids": [email_id],
             "properties": [
-                "id", "mailboxIds", "keywords", "from", "to", "cc", "replyTo", "inReplyTo", "references",
+                "id", "blobId", "mailboxIds", "keywords", "from", "to", "cc", "replyTo", "inReplyTo", "references",
                 "subject", "receivedAt", "preview", "hasAttachment", "size", "bodyValues", "textBody", "htmlBody", "attachments",
             ],
             "fetchAllBodyValues": true,
             "maxBodyValueBytes": 2 * 1024 * 1024,
         }, "email"]])).await?;
         let mut emails: Vec<Email> = response_list(&result, "email")?;
-        Ok(emails.pop())
+        let Some(mut email) = emails.pop() else {
+            return Ok(None);
+        };
+        if let Some(blob_id) = email.blob_id.as_deref() {
+            let download = self.download(blob_id, "message.eml").await?;
+            if (200..300).contains(&download.status)
+                && let Some(message) = mail_parser::MessageParser::default().parse(&download.body)
+            {
+                email.mime_parsed = true;
+                email.parsed_text_body = message.body_text(0).map(|body| body.into_owned());
+                email.parsed_html_body = message.body_html(0).map(|body| body.into_owned());
+            }
+        }
+        Ok(Some(email))
     }
 
     pub async fn identities(&self) -> Result<Vec<Identity>, String> {
@@ -572,6 +585,8 @@ pub struct BodyValue {
 #[serde(rename_all = "camelCase")]
 pub struct Email {
     pub id: String,
+    pub blob_id: Option<String>,
+    pub thread_id: Option<String>,
     pub mailbox_ids: HashMap<String, bool>,
     pub keywords: HashMap<String, bool>,
     pub size: u64,
@@ -589,6 +604,12 @@ pub struct Email {
     pub text_body: Option<Vec<BodyPart>>,
     pub html_body: Option<Vec<BodyPart>>,
     pub attachments: Option<Vec<BodyPart>>,
+    #[serde(skip)]
+    parsed_text_body: Option<String>,
+    #[serde(skip)]
+    parsed_html_body: Option<String>,
+    #[serde(skip)]
+    mime_parsed: bool,
 }
 
 impl Email {
@@ -608,6 +629,14 @@ impl Email {
     }
 
     pub fn body(&self, html: bool) -> Option<&str> {
+        let parsed_body = if html {
+            self.parsed_html_body.as_deref()
+        } else {
+            self.parsed_text_body.as_deref()
+        };
+        if self.mime_parsed {
+            return parsed_body;
+        }
         let parts = if html {
             &self.html_body
         } else {
