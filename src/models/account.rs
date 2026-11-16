@@ -119,6 +119,34 @@ pub struct CalendarAccount {
     pub calendar_protocol: DavOrJmap,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesAccount {
+    pub id: String,
+    pub server_url: String,
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub auth_mode: AuthMode,
+}
+
+impl ServerAccount for FilesAccount {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn server_url(&self) -> &str {
+        &self.server_url
+    }
+    fn username(&self) -> &str {
+        &self.username
+    }
+    fn password(&self) -> &str {
+        &self.password
+    }
+    fn auth_mode(&self) -> &AuthMode {
+        &self.auth_mode
+    }
+}
+
 impl ServerAccount for CalendarAccount {
     fn id(&self) -> &str {
         &self.id

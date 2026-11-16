@@ -2,12 +2,24 @@
 pub mod calendar;
 #[cfg(any(feature = "desktop", feature = "contacts"))]
 pub mod contacts;
-#[cfg(any(feature = "desktop", feature = "calendar", feature = "contacts"))]
+#[cfg(any(
+    feature = "desktop",
+    feature = "calendar",
+    feature = "contacts",
+    feature = "files"
+))]
 pub mod dav;
+#[cfg(feature = "files")]
+pub mod files;
+#[cfg(any(feature = "desktop", feature = "mail"))]
 pub mod imap_smtp;
+#[cfg(any(feature = "desktop", feature = "calendar", feature = "contacts", feature = "mail"))]
 pub mod jmap;
+#[cfg(any(feature = "desktop", feature = "mail"))]
 pub mod mail;
+#[cfg(any(feature = "desktop", feature = "mail"))]
 pub mod sieve;
+#[cfg(any(feature = "desktop", feature = "mail"))]
 pub mod webmail;
 
 use crate::models::account::{AuthMode, ServerAccount};

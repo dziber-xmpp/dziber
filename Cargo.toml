@@ -26,6 +26,7 @@ mail = [
 ]
 calendar = ["mail", "dep:roxmltree"]
 contacts = ["mail", "dep:calcard", "dep:roxmltree"]
+files = ["dep:base64", "dep:reqwest", "dep:roxmltree", "dep:percent-encoding"]
 omemo = [
   "dep:aes", "dep:aes-gcm", "dep:base64", "dep:cbc", "dep:hex", "dep:hkdf",
   "dep:hmac", "dep:minidom", "dep:rand", "dep:rand_core", "dep:sha2", "dep:subtle",
